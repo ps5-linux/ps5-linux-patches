@@ -827,7 +827,7 @@ index 699a756bbc40..4a9d4ba6abf4 100644
  		dc->res_pool->dp_clock_source) == false)
  		dm_error("Failed to power down pll! (dp clk src)\n");
 diff --git a/drivers/gpu/drm/amd/display/dc/link/link_dpms.c b/drivers/gpu/drm/amd/display/dc/link/link_dpms.c
-index 9b1d34c3438b..15a327b96f94 100644
+index 9b1d34c3438b..3c63ec7198af 100644
 --- a/drivers/gpu/drm/amd/display/dc/link/link_dpms.c
 +++ b/drivers/gpu/drm/amd/display/dc/link/link_dpms.c
 @@ -35,6 +35,9 @@
@@ -840,18 +840,20 @@ index 9b1d34c3438b..15a327b96f94 100644
  #include "link_dpms.h"
  #include "link_hwss.h"
  #include "link_validation.h"
-@@ -2413,6 +2416,10 @@ void link_set_dpms_off(struct pipe_ctx *pipe_ctx)
- 		/* since current psp not loaded, we need to reset it to default */
- 		link->panel_mode = panel_mode;
- 	}
-+
+@@ -2323,6 +2326,12 @@ void link_set_dpms_off(struct pipe_ctx *pipe_ctx)
+ 	if (dc_is_virtual_signal(pipe_ctx->stream->signal))
+ 		return;
+ 
 +#ifdef CONFIG_X86_PS5
++	sceHdmiSetAudioMute(1);
++	sceHdmiDeviceSetVideoMute(1);
 +	sceHdmiInitVideoConfig();
 +#endif
- }
- 
- void link_set_dpms_on(
-@@ -2634,4 +2641,17 @@ void link_set_dpms_on(
++
+ 	if (pipe_ctx->stream->sink) {
+ 		if (pipe_ctx->stream->sink->sink_signal != SIGNAL_TYPE_VIRTUAL &&
+ 			pipe_ctx->stream->sink->sink_signal != SIGNAL_TYPE_NONE) {
+@@ -2634,4 +2643,17 @@ void link_set_dpms_on(
  	if (dc_is_hdmi_signal(pipe_ctx->stream->signal)) {
  		set_avmute(pipe_ctx, false);
  	}
