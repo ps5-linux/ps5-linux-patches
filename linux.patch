@@ -1015,10 +1015,10 @@ index 000000000000..7acb030a4976
 +obj-y += spcie.o tpcie.o hdmi.o mp1.o
 diff --git a/drivers/ps5/hdmi.c b/drivers/ps5/hdmi.c
 new file mode 100644
-index 000000000000..20e5f3648168
+index 000000000000..1edee8c4316c
 --- /dev/null
 +++ b/drivers/ps5/hdmi.c
-@@ -0,0 +1,1022 @@
+@@ -0,0 +1,1027 @@
 +#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 +
 +#include <linux/module.h>
@@ -1654,14 +1654,18 @@ index 000000000000..20e5f3648168
 +	i2c_write(0x7005, 0x80);
 +	i2c_write(0x7009, 0x00);
 +	i2c_write(0x7040, 0x42);
-+	i2c_write(0x7225, 0x28);
++	/* Set colorimetry and aspect ratio (HDTV and 16:9) */
++	i2c_write(0x7225, 0x20 | 0x08);
 +	if (h == 1080) {
++		/* Set VIC and content type */
 +		i2c_write_data(0x7227, (u8[]){0x10, 0x00}, 2);
 +		i2c_write_data(0x7070, (u8[]){0x10, 0x10, 0x00, 0x00, 0x00, 0x00}, 6);
 +	} else if (h == 1440) {
++		/* Set VIC and content type */
 +		i2c_write_data(0x7227, (u8[]){0x04, 0x00}, 2);
 +		i2c_write_data(0x7070, (u8[]){0x00, 0x00, 0x00, 0x00, 0x00, 0xfb}, 6);
 +	} else if (h == 2160) {
++		/* Set VIC and content type */
 +		i2c_write_data(0x7227, (u8[]){0x06, 0x00}, 2);
 +		i2c_write_data(0x7070, (u8[]){0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, 6);
 +	}
@@ -1700,12 +1704,13 @@ index 000000000000..20e5f3648168
 +	i2c_init(1);
 +	i2c_waitset(0x10e7, 0x80);
 +	if (h == 2160) {
-+		i2c_mask(0x7227, 0x61, 0xff);
++		/* Set VIC */
++		i2c_mask(0x7227, 97, 0xff);
 +	}
-+	// i2c_cmd_2_1(0x7231, 0x00);
-+	// i2c_cmd_2_1(0x7232, 0x00);
-+	i2c_mask(0x7226, 0x80, 0x80);
-+	i2c_mask(0x7228, 0x30, 0x30);
++	/* Enable IT content */
++	i2c_mask(0x7226, 1 << 7, 0x80);
++	/* Set content type (game) */
++	i2c_mask(0x7228, 3 << 4, 0x30);
 +	i2c_write(0x7204, 0x40);
 +	i2c_waitclear(0x7204, 0x40);
 +	i2c_delay(10);
@@ -2025,7 +2030,7 @@ index 000000000000..20e5f3648168
 +	int i;
 +	u32 sum = 0;
 +
-+	// For some reason, PS5 sets 0x01.
++	/* For some reason, PS5 sets 0x01. */
 +	edid[0] = 0x00;
 +	for (i = 0; i < 0x7f; i++)
 +		sum += edid[i];
