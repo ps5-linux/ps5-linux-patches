@@ -539,7 +539,18 @@ diff --git a/drivers/gpu/drm/amd/amdgpu/amdgpu_drv.c b/drivers/gpu/drm/amd/amdgp
 index c91638e65174..c9e4bd5dee98 100644
 --- a/drivers/gpu/drm/amd/amdgpu/amdgpu_drv.c
 +++ b/drivers/gpu/drm/amd/amdgpu/amdgpu_drv.c
-@@ -1134,6 +1134,12 @@ module_param_named(user_queue, amdgpu_user_queue, int, 0444);
+@@ -41,6 +41,10 @@
+ #include <linux/suspend.h>
+ #include <linux/vga_switcheroo.h>
+ 
++#ifdef CONFIG_X86_PS5
++#include <linux/ps5.h>
++#endif
++
+ #include "amdgpu.h"
+ #include "amdgpu_amdkfd.h"
+ #include "amdgpu_dma_buf.h"
+@@ -1134,6 +1138,12 @@ module_param_named(user_queue, amdgpu_user_queue, int, 0444);
  MODULE_PARM_DESC(hdmi_hpd_debounce_delay_ms, "HDMI HPD disconnect debounce delay in milliseconds (0 to disable (by default), 1500 is common)");
  module_param_named(hdmi_hpd_debounce_delay_ms, amdgpu_hdmi_hpd_debounce_delay_ms, uint, 0644);
  
@@ -552,7 +563,7 @@ index c91638e65174..c9e4bd5dee98 100644
  /* These devices are not supported by amdgpu.
   * They are supported by the mach64, r128, radeon drivers
   */
-@@ -2179,6 +2185,7 @@ static const struct pci_device_id pciidlist[] = {
+@@ -2179,6 +2189,7 @@ static const struct pci_device_id pciidlist[] = {
  	{0x1002, 0x7410, PCI_ANY_ID, PCI_ANY_ID, 0, 0, CHIP_ALDEBARAN},
  
  	/* CYAN_SKILLFISH */
@@ -560,6 +571,19 @@ index c91638e65174..c9e4bd5dee98 100644
  	{0x1002, 0x13DB, PCI_ANY_ID, PCI_ANY_ID, 0, 0, CHIP_CYAN_SKILLFISH|AMD_IS_APU},
  	{0x1002, 0x13F9, PCI_ANY_ID, PCI_ANY_ID, 0, 0, CHIP_CYAN_SKILLFISH|AMD_IS_APU},
  	{0x1002, 0x13FA, PCI_ANY_ID, PCI_ANY_ID, 0, 0, CHIP_CYAN_SKILLFISH|AMD_IS_APU},
+@@ -2393,6 +2404,12 @@ static int amdgpu_pci_probe(struct pci_dev *pdev,
+ 	int ret, retry = 0, i;
+ 	bool supports_atomic = false;
+ 
++#ifdef CONFIG_X86_PS5
++	if (!isHdmiEnabled()) {
++		return -EPROBE_DEFER;
++	}
++#endif
++
+ 	if ((pdev->class >> 8) == PCI_CLASS_DISPLAY_VGA ||
+ 	    (pdev->class >> 8) == PCI_CLASS_DISPLAY_OTHER) {
+ 		if (drm_firmware_drivers_only() && amdgpu_modeset == -1)
 diff --git a/drivers/gpu/drm/amd/amdgpu/amdgpu_gfx.c b/drivers/gpu/drm/amd/amdgpu/amdgpu_gfx.c
 index 77578ecc6782..b037a6f57a6d 100644
 --- a/drivers/gpu/drm/amd/amdgpu/amdgpu_gfx.c
@@ -1067,7 +1091,7 @@ new file mode 100644
 index 000000000000..1edee8c4316c
 --- /dev/null
 +++ b/drivers/ps5/hdmi.c
-@@ -0,0 +1,1027 @@
+@@ -0,0 +1,1035 @@
 +#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 +
 +#include <linux/module.h>
@@ -1170,6 +1194,7 @@ index 000000000000..1edee8c4316c
 +
 +static struct i2c_context i2c_ctx;
 +
++static bool hdmi_is_enabled;
 +static u8 hdmi_ic_type;
 +static u8 tmds_polarity;
 +static u8 tmds_ch_swap;
@@ -2038,8 +2063,15 @@ index 000000000000..1edee8c4316c
 +	i2c_init(4);
 +	i2c_cmd_5_4(enable);
 +	i2c_exec();
++	hdmi_is_enabled = !!enable;
 +}
 +EXPORT_SYMBOL(sceControlHdmiEvent);
++
++int isHdmiEnabled(void)
++{
++	return hdmi_is_enabled;
++}
++EXPORT_SYMBOL(isHdmiEnabled);
 +
 +int getHdmiConfiguration(void)
 +{
@@ -3303,7 +3335,7 @@ new file mode 100644
 index 000000000000..9b34ae8f2b73
 --- /dev/null
 +++ b/include/linux/ps5.h
-@@ -0,0 +1,70 @@
+@@ -0,0 +1,71 @@
 +#ifndef _LINUX_PS5_H
 +#define _LINUX_PS5_H
 +
@@ -3354,6 +3386,7 @@ index 000000000000..9b34ae8f2b73
 +void sceHdmiSetAudioConfig(void);
 +void sceHdmiSetAudioMute(int mute);
 +int getHdmiConfiguration(void);
++int isHdmiEnabled(void);
 +
 +int icc_usbc_set_pdcon_op_mode(u8 PortId, u8 OpMode);
 +int icc_configuration_set_cpu_info_bit(u8 *bit);
