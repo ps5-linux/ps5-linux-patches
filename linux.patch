@@ -2825,7 +2825,7 @@ index 000000000000..7f6fcaf9522d
 +	msg->data[1] = 0; // shutdown
 +	msg->data[2] = 2; // depth
 +	msg->data[3] = 0; // cause
-+	msg->data[4] = 2; // hand
++	msg->data[4] = 1; // hand
 +	*(u32 *)&msg->data[5] = 0;
 +
 +	icc_query(buf, buf);
@@ -2847,7 +2847,7 @@ index 000000000000..7f6fcaf9522d
 +	msg->data[1] = 1; // reboot
 +	msg->data[2] = 2; // depth
 +	msg->data[3] = 0; // cause
-+	msg->data[4] = 2; // hand
++	msg->data[4] = 1; // hand
 +	*(u32 *)&msg->data[5] = 0;
 +
 +	icc_query(buf, buf);
