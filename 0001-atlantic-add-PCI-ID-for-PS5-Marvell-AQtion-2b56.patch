@@ -1,0 +1,93 @@
+From: harreh3iesh <79946552+harreh3iesh@users.noreply.github.com>
+Date: Thu, 14 May 2026 21:30:00 -0400
+Subject: [PATCH] net: atlantic: add PCI ID 1b4b:2b56 (PS5 internal NIC)
+
+The PlayStation 5's internal Ethernet controller is a Marvell-vendor
+AQtion-family device:
+
+  40:00.7 Ethernet controller: Marvell Technology Group Ltd.
+          Device 2b56 (rev 02)
+
+It is not in aq_pci_tbl and the existing vendor check in
+aq_pci_probe_get_hw_by_id() refuses anything that is not
+PCI_VENDOR_ID_AQUANTIA, so the chip has no driver bound at all.
+
+Add local defines for the vendor and device, list the device in
+aq_pci_tbl, accept the vendor in the probe path, and map it to
+hw_atl_ops_b1 / hw_atl_b0_caps_aqc107 in hw_atl_boards. The ops/caps
+choice is a starting guess; corrections welcome from anyone with
+authoritative info on the Marvell 2b56 silicon.
+
+With the patch the driver matches the device on probe. It does not
+yet bring the link up: hw_atl_utils_soft_reset_rbl() times out
+because the chip is left in a non-standard state at boot handoff and
+the on-chip bootloader never overwrites the RBL sentinel at reg 0x388.
+That work will follow.
+
+Tested on PS5 CFI-1115A (system software 3.20) running the ps5-linux
+kernel 7.0.2 with the existing ps5-linux-patches applied. Before:
+"Kernel driver in use" is unset for 40:00.7. After: atlantic is bound;
+probe is attempted and fails as described.
+
+Signed-off-by: harreh3iesh <79946552+harreh3iesh@users.noreply.github.com>
+---
+ drivers/net/ethernet/aquantia/atlantic/aq_common.h   | 5 +++++
+ drivers/net/ethernet/aquantia/atlantic/aq_pci_func.c | 7 ++++++-
+ 2 files changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/net/ethernet/aquantia/atlantic/aq_common.h b/drivers/net/ethernet/aquantia/atlantic/aq_common.h
+--- a/drivers/net/ethernet/aquantia/atlantic/aq_common.h
++++ b/drivers/net/ethernet/aquantia/atlantic/aq_common.h
+@@ -17,6 +17,8 @@
+
+ #define PCI_VENDOR_ID_AQUANTIA  0x1D6A
+
++#define PCI_VENDOR_ID_MARVELL_PS5	0x1B4B
++
+ #define AQ_DEVICE_ID_0001	0x0001
+ #define AQ_DEVICE_ID_D100	0xD100
+ #define AQ_DEVICE_ID_D107	0xD107
+@@ -46,6 +48,9 @@
+ #define AQ_DEVICE_ID_AQC115C	0x12C0
+ #define AQ_DEVICE_ID_AQC116C	0x11C0
+
++/* PlayStation 5 internal NIC (Marvell-rebadged AQtion B1) */
++#define AQ_DEVICE_ID_PS5	0x2B56
++
+ #define HW_ATL_NIC_NAME "Marvell (aQuantia) AQtion 10Gbit Network Adapter"
+
+ #define AQ_HWREV_ANY	0
+diff --git a/drivers/net/ethernet/aquantia/atlantic/aq_pci_func.c b/drivers/net/ethernet/aquantia/atlantic/aq_pci_func.c
+--- a/drivers/net/ethernet/aquantia/atlantic/aq_pci_func.c
++++ b/drivers/net/ethernet/aquantia/atlantic/aq_pci_func.c
+@@ -49,6 +49,8 @@ static const struct pci_device_id aq_pci_tbl[] = {
+ 	{ PCI_VDEVICE(AQUANTIA, AQ_DEVICE_ID_AQC115C), },
+ 	{ PCI_VDEVICE(AQUANTIA, AQ_DEVICE_ID_AQC113CA), },
+ 	{ PCI_VDEVICE(AQUANTIA, AQ_DEVICE_ID_AQC116C), },
++
++	{ PCI_DEVICE(PCI_VENDOR_ID_MARVELL_PS5, AQ_DEVICE_ID_PS5), },
+
+ 	{}
+ };
+@@ -89,6 +91,8 @@ static const struct aq_board_revision_s hw_atl_boards[] = {
+ 	{ AQ_DEVICE_ID_AQC113CA,	AQ_HWREV_ANY,	&hw_atl2_ops, &hw_atl2_caps_aqc113, },
+ 	{ AQ_DEVICE_ID_AQC116C,		AQ_HWREV_ANY,	&hw_atl2_ops, &hw_atl2_caps_aqc116c, },
+
++	{ AQ_DEVICE_ID_PS5,		AQ_HWREV_ANY,	&hw_atl_ops_b1, &hw_atl_b0_caps_aqc107, },
++
+ };
+
+ MODULE_DEVICE_TABLE(pci, aq_pci_tbl);
+@@ -101,7 +105,8 @@ static int aq_pci_probe_get_hw_by_id(struct pci_dev *pdev,
+ {
+ 	int i;
+
+-	if (pdev->vendor != PCI_VENDOR_ID_AQUANTIA)
++	if (pdev->vendor != PCI_VENDOR_ID_AQUANTIA &&
++	    pdev->vendor != PCI_VENDOR_ID_MARVELL_PS5)
+ 		return -EINVAL;
+
+ 	for (i = 0; i < ARRAY_SIZE(hw_atl_boards); i++) {
+--
+2.43.0
+
