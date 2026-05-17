@@ -18,7 +18,7 @@ index fe106da41ae5..6fd78cbfe1d6 100644
  	bool "ScaleMP vSMP"
  	select HYPERVISOR_GUEST
 diff --git a/arch/x86/include/asm/msr-index.h b/arch/x86/include/asm/msr-index.h
-index 92bb6b2f778e..0a02f339b98a 100644
+index 4efbbf9d117b..403d5ff74ef0 100644
 --- a/arch/x86/include/asm/msr-index.h
 +++ b/arch/x86/include/asm/msr-index.h
 @@ -26,6 +26,7 @@
