@@ -30,8 +30,6 @@ sudo mkinitcpio -k "$(make kernelrelease)" -g /boot/initrd.img-$(make kernelrele
 If you are updating Linux on your external USB SSD or if you are directly booting into M.2 SSD, i.e. if you use `-m2` in `cmdline.txt`, then you have to update the files on the FAT32 partition of your USB drive:
 
 ```bash
-sudo mv /boot/efi/bzImage /boot/efi/bzImage.old
-sudo mv /boot/efi/initrd.img /boot/efi/initrd.img.old
 sudo cp /boot/vmlinuz /boot/efi/bzImage
 sudo cp /boot/initrd.img /boot/efi/initrd.img
 ```
@@ -44,7 +42,6 @@ If you are updating Linux on your M.2 SSD, but you do not directly boot into it,
 - amdgpu smu driver to show correct gpu frequency and temperature
 - ethernet driver for (mediatek?) 0x104d:0x9104
 - xhci driver adjustment for 0x104d:0x9108 to enable bluetooth
-- wlan driver marvell 1b4b:2b56 (https://github.com/nxp-imx/mwifiex)
 - hdmi converter improvments: hdr, rgb range, 120hz
 
 ## Bugs
