@@ -6308,3 +6308,1460 @@ index a4104376523a..befee7ef6c94 100644
  	{ PCI_VDEVICE(ATI, 0x157a),
  	  .driver_data = AZX_DRIVER_ATIHDMI_NS | AZX_DCAPS_PRESET_ATI_HDMI_NS },
  	{ PCI_VDEVICE(ATI, 0x15b3),
+diff --git a/drivers/net/phy/Kconfig b/drivers/net/phy/Kconfig
+index 7b73332..b92217f 100644
+--- a/drivers/net/phy/Kconfig
++++ b/drivers/net/phy/Kconfig
+@@ -471,3 +471,4 @@ config XILINX_GMII2RGMII
+ 	  Ethernet physical media devices and the Gigabit Ethernet controller.
+ 
+ endif # PHYLIB
++source "drivers/net/phy/mts/Kconfig"
+diff --git a/drivers/net/phy/Makefile b/drivers/net/phy/Makefile
+index 3a34917..2f0ec5e 100644
+--- a/drivers/net/phy/Makefile
++++ b/drivers/net/phy/Makefile
+@@ -71,6 +71,7 @@ obj-$(CONFIG_MARVELL_88X2222_PHY)	+= marvell-88x2222.o
+ obj-$(CONFIG_MAXLINEAR_GPHY)	+= mxl-gpy.o
+ obj-$(CONFIG_MAXLINEAR_86110_PHY)	+= mxl-86110.o
+ obj-y				+= mediatek/
++obj-$(CONFIG_MTS)		+= mts/
+ obj-$(CONFIG_MESON_GXL_PHY)	+= meson-gxl.o
+ obj-$(CONFIG_MICREL_PHY)	+= micrel.o
+ obj-$(CONFIG_MICROCHIP_PHY)	+= microchip.o
+diff --git a/drivers/net/phy/mts/Kconfig b/drivers/net/phy/mts/Kconfig
+new file mode 100644
+index 0000000..94cb839
+--- /dev/null
++++ b/drivers/net/phy/mts/Kconfig
+@@ -0,0 +1,10 @@
++# SPDX-License-Identifier: GPL-2.0-only
++config MTS
++	tristate "MediaTek Star Gigabit Ethernet"
++	depends on PCI && X86_PS5
++	help
++	  Driver for the MediaTek Star based Gigabit Ethernet controller
++	  (104d:9104) found on the PlayStation 5.
++
++	  To compile this driver as a module, choose M here. The module
++	  will be called mts.
+diff --git a/drivers/net/phy/mts/Makefile b/drivers/net/phy/mts/Makefile
+new file mode 100644
+index 0000000..e01771b
+--- /dev/null
++++ b/drivers/net/phy/mts/Makefile
+@@ -0,0 +1,3 @@
++# SPDX-License-Identifier: GPL-2.0-only
++obj-$(CONFIG_MTS) += mts.o
++mts-y := mts_main.o mts_phy.o
+diff --git a/drivers/net/phy/mts/mts.h b/drivers/net/phy/mts/mts.h
+new file mode 100644
+index 0000000..d994ace
+--- /dev/null
++++ b/drivers/net/phy/mts/mts.h
+@@ -0,0 +1,181 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * PlayStation 5 Gigabit Ethernet driver
++ *
++ * Based on the MediaTek Star Ethernet MAC (mtk_star_emac).
++ */
++
++#ifndef _PS5_GBE_H
++#define _PS5_GBE_H
++
++#include <linux/types.h>
++#include <linux/bits.h>
++#include <linux/io.h>
++#include <linux/spinlock.h>
++#include <linux/netdevice.h>
++#include <linux/workqueue.h>
++
++struct pci_dev;
++struct sk_buff;
++
++#define GBE_REG_SMI		0x00
++#define GBE_REG_LINK		0x04
++#define GBE_REG_CLK_CTRL	0x08
++#define GBE_REG_CTRL		0x0c
++#define GBE_REG_MODE		0x10
++#define GBE_REG_MAC_HI		0x14
++#define GBE_REG_MAC_LO		0x18
++#define GBE_REG_RXBUF		0x30
++#define GBE_REG_TX_DMA_CTRL	0x34
++#define GBE_REG_RX_DMA_CTRL	0x38
++#define GBE_REG_TX_RING_CUR	0x3c
++#define GBE_REG_RX_RING_CUR	0x40
++#define GBE_REG_TX_RING_BASE	0x44
++#define GBE_REG_RX_RING_BASE	0x48
++#define GBE_REG_ISR		0x50
++#define GBE_REG_IER		0x54
++#define GBE_REG_SERDES		0x74
++#define GBE_REG_RX_PCODE	0x78
++#define GBE_REG_TXKICK		0x9c
++#define GBE_REG_RESET		0xac
++#define GBE_REG_TX_EN		0x1b8
++#define GBE_REG_FILT_CTRL	0x1c4
++#define GBE_REG_FILT_DATA	0x1c8
++#define GBE_REG_RX_EN		0x1d4
++#define GBE_REG_COAL		0x204
++
++#define GBE_PCS_BASE		0x4000
++
++#define GBE_CLK_ENABLE		0x7597c00
++
++#define GBE_SERDES_1G		0x303277
++#define GBE_SERDES_OTHER	0x304277
++
++#define GBE_ISR_LINK		BIT(2)
++#define GBE_ISR_TX_DONE		BIT(7)
++#define GBE_ISR_RX_DONE		BIT(6)
++#define GBE_ISR_ERRORS		0x7be600
++#define GBE_ISR_LSO_RECOVER	0x500000
++
++#define GBE_ST_LSO_RECOVER	0
++
++#define GBE_ERR_LSO_FIFO	0x200000
++#define GBE_ERR_LSO_PROTO	0x80000
++#define GBE_ERR_RX_AXI		0x20000
++#define GBE_ERR_IP_CKSUM	0x8000
++#define GBE_ERR_TCP_CKSUM	0x4000
++#define GBE_ERR_UDP_CKSUM	0x2000
++#define GBE_ERR_RX_PCODE	0x400
++
++#define GBE_COAL_VAL		0x10001388
++
++/* excludes bit2 (LINK) - polling link state avoids IRQ storm from autoneg pulses */
++#define GBE_IER_MASK		0x5014fa
++
++#define GBE_DMA_STOP		BIT(1)
++#define GBE_DMA_KICK		BIT(2)
++
++struct gbe_desc {
++	__le32	flags;
++	__le32	buf_addr;
++	__le32	word2;
++	__le32	word3;
++};
++
++#define GBE_DESC_DONE		BIT(31)
++#define GBE_DESC_WRAP		BIT(30)
++#define GBE_DESC_SOP		BIT(29)
++#define GBE_DESC_EOP		BIT(28)
++#define GBE_DESC_LEN_MASK	0xffff
++#define GBE_DESC_RX_LEN		0x600
++#define GBE_DESC_RX_LEN_MASK	0x7ff
++/* idle TX descriptor word2 - chip treats anything >= 0xffff0000 as free */
++#define GBE_DESC_W2_ARM		0xffff0000
++/* active TX descriptor word2 */
++#define GBE_DESC_W2_TX		0x4
++
++#define GBE_RING_SIZE		256
++#define GBE_DESC_RING_BYTES	(GBE_RING_SIZE * sizeof(struct gbe_desc))
++#define GBE_RX_BUF_LEN		1536
++
++#define GBE_TX_SCRATCH_SIZE	0xa0000
++#define GBE_RX_POOL_SIZE	(GBE_RING_SIZE * GBE_DESC_RX_LEN)
++
++struct gbe_priv {
++	struct net_device	*netdev;
++	struct pci_dev		*pdev;
++	void __iomem		*base;
++	/* PCS/SerDes regs live in Salina Glue (104d:9107) BAR4, not BAR0 */
++	void __iomem		*glue_base;
++	struct pci_dev		*glue_pdev;
++
++	/* tx goes through a bounce scratch region, the chip wants contiguous buffers */
++	struct gbe_desc		*tx_ring;
++	dma_addr_t		tx_ring_dma;
++	void			*tx_scratch;
++	dma_addr_t		tx_scratch_dma;
++	unsigned int		tx_scratch_off;
++	unsigned int		tx_head;
++	unsigned int		tx_tail;
++
++	/* rx just has the chip dma straight into a slotted pool */
++	struct gbe_desc		*rx_ring;
++	dma_addr_t		rx_ring_dma;
++	void			*rx_pool;
++	dma_addr_t		rx_pool_dma;
++	unsigned int		rx_head;
++
++	struct napi_struct	napi;
++	int			irq;
++	int			link_up;
++	unsigned long		state;
++	struct delayed_work	link_poll;
++	spinlock_t		lock;
++
++	/* debug counters, dumped every now and then by the link poll work */
++	u32			cnt_irq;
++	u32			cnt_irq_link;
++	u32			cnt_irq_tx;
++	u32			cnt_irq_rx;
++	u32			cnt_irq_err;
++	u32			cnt_irq_lso;
++	u32			cnt_tx_pkts;
++	u32			cnt_tx_busy;
++	u32			cnt_tx_drop_big;
++	u32			cnt_tx_completed;
++	u32			cnt_rx_pkts;
++	u32			cnt_rx_bcast;
++	u32			cnt_rx_mcast;
++	u32			cnt_rx_bad_len;
++	u32			cnt_rx_nomem;
++	u32			cnt_lso_recover;
++	u32			cnt_link_up;
++	u32			cnt_link_down;
++	unsigned int		poll_tick;
++	/* used by link_poll_work to detect frozen IRQ delivery on cold boot */
++	u32			irq_watchdog;
++};
++
++static inline u32 gbe_rd(struct gbe_priv *p, u32 reg)
++{
++	return readl(p->base + reg);
++}
++
++static inline void gbe_wr(struct gbe_priv *p, u32 reg, u32 val)
++{
++	writel(val, p->base + reg);
++}
++
++static inline void gbe_set(struct gbe_priv *p, u32 reg, u32 bits)
++{
++	gbe_wr(p, reg, gbe_rd(p, reg) | bits);
++}
++
++static inline void gbe_clr(struct gbe_priv *p, u32 reg, u32 bits)
++{
++	gbe_wr(p, reg, gbe_rd(p, reg) & ~bits);
++}
++
++int gbe_phy_init(struct gbe_priv *p);
++
++#endif /* _PS5_GBE_H */
+diff --git a/drivers/net/phy/mts/mts_main.c b/drivers/net/phy/mts/mts_main.c
+new file mode 100644
+index 0000000..cc9e18e
+--- /dev/null
++++ b/drivers/net/phy/mts/mts_main.c
+@@ -0,0 +1,808 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * PlayStation 5 Gigabit Ethernet driver
++ *
++ * Based on the MediaTek Star Ethernet MAC (mtk_star_emac).
++ */
++
++#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
++
++#include <linux/module.h>
++#include <linux/pci.h>
++#include <linux/netdevice.h>
++#include <linux/etherdevice.h>
++#include <linux/ethtool.h>
++#include <linux/interrupt.h>
++#include <linux/delay.h>
++#include <linux/ps5.h>
++
++#include "mts.h"
++
++#define GBE_VENDOR_ID	0x104d
++#define GBE_DEVICE_ID	0x9104
++#define GBE_GLUE_ID	0x9107
++
++static void gbe_write_mac(struct gbe_priv *p, const u8 *addr)
++{
++	gbe_wr(p, GBE_REG_MAC_HI, (addr[0] << 8) | addr[1]);
++	gbe_wr(p, GBE_REG_MAC_LO,
++	       (addr[2] << 24) | (addr[3] << 16) | (addr[4] << 8) | addr[5]);
++}
++
++/* the glue is a seperate pci function, grab it too :) */
++static int gbe_glue_map(struct gbe_priv *p)
++{
++	struct pci_dev *glue;
++
++	glue = pci_get_device(GBE_VENDOR_ID, GBE_GLUE_ID, NULL);
++	if (!glue)
++		return -ENODEV;
++
++	if (!(pci_resource_flags(glue, 4) & IORESOURCE_MEM)) {
++		pci_dev_put(glue);
++		return -ENODEV;
++	}
++
++	p->glue_base = ioremap(pci_resource_start(glue, 4),
++			       pci_resource_len(glue, 4));
++	if (!p->glue_base) {
++		pci_dev_put(glue);
++		return -ENOMEM;
++	}
++
++	p->glue_pdev = glue;
++	return 0;
++}
++
++static void gbe_glue_unmap(struct gbe_priv *p)
++{
++	if (p->glue_base) {
++		iounmap(p->glue_base);
++		p->glue_base = NULL;
++	}
++	if (p->glue_pdev) {
++		pci_dev_put(p->glue_pdev);
++		p->glue_pdev = NULL;
++	}
++}
++
++/* MAC address lives at offset 0x3000 in Salina Glue BAR4 scratchpad */
++static int gbe_read_glue_mac(struct gbe_priv *p, u8 *addr)
++{
++	int i;
++
++	if (!p->glue_base)
++		return -ENODEV;
++
++	for (i = 0; i < ETH_ALEN; i++)
++		addr[i] = readb(p->glue_base + 0x3000 + i);
++	return 0;
++}
++
++/* writing 9 to the reset reg pulses the whole MAC, needs a short settle */
++static void gbe_reset(struct gbe_priv *p)
++{
++	gbe_wr(p, GBE_REG_RESET, 9);
++	usleep_range(680, 1000);
++}
++
++/* mark every tx slot done+free so the chip leaves em alone till we arm one */
++static void gbe_init_tx_ring(struct gbe_priv *p)
++{
++	int i;
++
++	for (i = 0; i < GBE_RING_SIZE; i++) {
++		p->tx_ring[i].flags = cpu_to_le32(GBE_DESC_DONE |
++			(i == GBE_RING_SIZE - 1 ? GBE_DESC_WRAP : 0));
++		p->tx_ring[i].buf_addr = 0;
++		p->tx_ring[i].word2 = cpu_to_le32(GBE_DESC_W2_ARM);
++		p->tx_ring[i].word3 = 0;
++	}
++	p->tx_head = p->tx_tail = 0;
++	p->tx_scratch_off = 0;
++}
++
++/* point each rx slot at its pool buffer and give it back to teh chip */
++static void gbe_rx_fill(struct gbe_priv *p)
++{
++	int i;
++
++	for (i = 0; i < GBE_RING_SIZE; i++) {
++		p->rx_ring[i].buf_addr = cpu_to_le32(p->rx_pool_dma +
++						     i * GBE_DESC_RX_LEN);
++		p->rx_ring[i].word2 = 0;
++		p->rx_ring[i].word3 = 0;
++		dma_wmb();
++		p->rx_ring[i].flags = cpu_to_le32(GBE_DESC_RX_LEN |
++			(i == GBE_RING_SIZE - 1 ? GBE_DESC_WRAP : 0));
++	}
++	p->rx_head = 0;
++}
++
++static void gbe_init_rings_hw(struct gbe_priv *p)
++{
++	gbe_init_tx_ring(p);
++
++	wmb();
++
++	gbe_wr(p, GBE_REG_TX_RING_BASE, p->tx_ring_dma);
++	gbe_wr(p, GBE_REG_TX_RING_CUR, p->tx_ring_dma);
++	gbe_wr(p, GBE_REG_RX_RING_BASE, p->rx_ring_dma);
++	gbe_wr(p, GBE_REG_RX_RING_CUR, p->rx_ring_dma);
++
++	/* toggle bit6 to clear any stale LSO cause latched from before init */
++	gbe_clr(p, GBE_REG_TXKICK, BIT(6));
++	gbe_set(p, GBE_REG_TXKICK, BIT(6));
++
++	gbe_set(p, GBE_REG_TX_DMA_CTRL, BIT(0));
++	gbe_set(p, GBE_REG_RX_DMA_CTRL, BIT(0));
++	gbe_wr(p, GBE_REG_IER, GBE_IER_MASK);
++}
++
++/* tell both dma engines to stop, then jsut spin till the bit clears */
++static void gbe_stop_dma(struct gbe_priv *p)
++{
++	int i;
++
++	gbe_wr(p, GBE_REG_IER, 0);
++
++	gbe_set(p, GBE_REG_TX_DMA_CTRL, GBE_DMA_STOP);
++	for (i = 0; i < 1000000 &&
++	     (gbe_rd(p, GBE_REG_TX_DMA_CTRL) & GBE_DMA_STOP); i++)
++		udelay(1);
++
++	gbe_set(p, GBE_REG_RX_DMA_CTRL, GBE_DMA_STOP);
++	for (i = 0; i < 1000000 &&
++	     (gbe_rd(p, GBE_REG_RX_DMA_CTRL) & GBE_DMA_STOP); i++)
++		udelay(1);
++}
++
++/* full bringup: reset, clocks, phy, then the magic mode/serdes vaules */
++static void gbe_init_hw(struct gbe_priv *p)
++{
++	gbe_reset(p);
++	gbe_set(p, GBE_REG_CLK_CTRL, GBE_CLK_ENABLE);
++	gbe_phy_init(p);
++	gbe_clr(p, GBE_REG_CTRL, BIT(7));
++	gbe_wr(p, GBE_REG_SERDES, GBE_SERDES_1G);
++	gbe_wr(p, GBE_REG_MODE, (gbe_rd(p, GBE_REG_MODE) & 0xffffff6e) | 0x81);
++	gbe_wr(p, GBE_REG_RXBUF, 0x10100);
++	gbe_write_mac(p, p->netdev->dev_addr);
++	gbe_wr(p, GBE_REG_COAL, GBE_COAL_VAL);
++}
++
++/* the two rings + tx bounce scratch + rx pool, all dma coherent */
++static int gbe_alloc_rings(struct gbe_priv *p)
++{
++	p->tx_ring = dma_alloc_coherent(&p->pdev->dev, GBE_DESC_RING_BYTES,
++					&p->tx_ring_dma, GFP_KERNEL);
++	if (!p->tx_ring)
++		return -ENOMEM;
++
++	p->rx_ring = dma_alloc_coherent(&p->pdev->dev, GBE_DESC_RING_BYTES,
++					&p->rx_ring_dma, GFP_KERNEL);
++	if (!p->rx_ring)
++		goto err_rx;
++
++	p->tx_scratch = dma_alloc_coherent(&p->pdev->dev, GBE_TX_SCRATCH_SIZE,
++					   &p->tx_scratch_dma, GFP_KERNEL);
++	if (!p->tx_scratch)
++		goto err_scratch;
++
++	p->rx_pool = dma_alloc_coherent(&p->pdev->dev, GBE_RX_POOL_SIZE,
++					&p->rx_pool_dma, GFP_KERNEL);
++	if (!p->rx_pool)
++		goto err_pool;
++
++	return 0;
++
++err_pool:
++	dma_free_coherent(&p->pdev->dev, GBE_TX_SCRATCH_SIZE,
++			  p->tx_scratch, p->tx_scratch_dma);
++err_scratch:
++	dma_free_coherent(&p->pdev->dev, GBE_DESC_RING_BYTES,
++			  p->rx_ring, p->rx_ring_dma);
++err_rx:
++	dma_free_coherent(&p->pdev->dev, GBE_DESC_RING_BYTES,
++			  p->tx_ring, p->tx_ring_dma);
++	return -ENOMEM;
++}
++
++static void gbe_free_rings(struct gbe_priv *p)
++{
++	if (p->tx_ring)
++		dma_free_coherent(&p->pdev->dev, GBE_DESC_RING_BYTES,
++				  p->tx_ring, p->tx_ring_dma);
++	if (p->rx_ring)
++		dma_free_coherent(&p->pdev->dev, GBE_DESC_RING_BYTES,
++				  p->rx_ring, p->rx_ring_dma);
++	if (p->tx_scratch)
++		dma_free_coherent(&p->pdev->dev, GBE_TX_SCRATCH_SIZE,
++				  p->tx_scratch, p->tx_scratch_dma);
++	if (p->rx_pool)
++		dma_free_coherent(&p->pdev->dev, GBE_RX_POOL_SIZE,
++				  p->rx_pool, p->rx_pool_dma);
++}
++
++/* clean up the tx descriptors the chip finished, wake the queue if we stopped it */
++static void gbe_tx_complete(struct gbe_priv *p)
++{
++	unsigned int tail = p->tx_tail;
++
++	while (tail != p->tx_head) {
++		struct gbe_desc *d = &p->tx_ring[tail];
++		u32 flags = le32_to_cpu(d->flags);
++		u32 w2    = le32_to_cpu(d->word2);
++
++		if (!(flags & GBE_DESC_DONE))
++			break;
++
++		/* chip reuses word2 < 0xffff0000 as ownership sentinel on ring wrap */
++		if (w2 >= 0xffff0000)
++			break;
++
++		/* re-arm it so the slot reads free next time round the ring */
++		d->word2 = cpu_to_le32(w2 | 0xffff0000);
++
++		p->cnt_tx_completed++;
++		tail = (tail + 1) % GBE_RING_SIZE;
++	}
++	p->tx_tail = tail;
++
++	if (netif_queue_stopped(p->netdev))
++		netif_wake_queue(p->netdev);
++}
++
++/* grab whatever rx slots are done up to budget, copy em out and re-arm */
++static int gbe_rx_poll(struct gbe_priv *p, int budget)
++{
++	struct net_device *dev = p->netdev;
++	unsigned int i = p->rx_head;
++	int done = 0;
++
++	while (done < budget &&
++	       (le32_to_cpu(p->rx_ring[i].flags) & GBE_DESC_DONE)) {
++		u32 flags = le32_to_cpu(p->rx_ring[i].flags);
++		u32 len = flags & GBE_DESC_RX_LEN_MASK;
++
++		netdev_dbg(dev, "rx[%u] len=%u flags=%#x w2=%#x\n", i, len,
++			   flags, le32_to_cpu(p->rx_ring[i].word2));
++
++		if (len >= ETH_ZLEN && len <= GBE_DESC_RX_LEN) {
++			struct sk_buff *skb;
++			const u8 *src = (const u8 *)p->rx_pool +
++					i * GBE_DESC_RX_LEN;
++
++			p->cnt_rx_pkts++;
++			if (is_broadcast_ether_addr(src))
++				p->cnt_rx_bcast++;
++			else if (is_multicast_ether_addr(src))
++				p->cnt_rx_mcast++;
++
++			skb = netdev_alloc_skb_ip_align(dev, len);
++			if (skb) {
++				skb_put_data(skb, src, len);
++				skb->protocol = eth_type_trans(skb, dev);
++				netif_rx(skb);
++				dev->stats.rx_packets++;
++				dev->stats.rx_bytes += len;
++			} else {
++				p->cnt_rx_nomem++;
++				dev->stats.rx_dropped++;
++			}
++		} else {
++			p->cnt_rx_bad_len++;
++			dev->stats.rx_errors++;
++		}
++
++		/* hand the slot back to the chip */
++		p->rx_ring[i].word2 = 0;
++		p->rx_ring[i].word3 = 0;
++		dma_wmb();
++		p->rx_ring[i].flags = cpu_to_le32(GBE_DESC_RX_LEN |
++			(i == GBE_RING_SIZE - 1 ? GBE_DESC_WRAP : 0));
++
++		done++;
++		i = (i + 1) % GBE_RING_SIZE;
++	}
++	p->rx_head = i;
++
++	if (done)
++		gbe_set(p, GBE_REG_RX_DMA_CTRL, GBE_DMA_KICK);
++
++	return done;
++}
++
++static netdev_tx_t gbe_xmit(struct sk_buff *skb, struct net_device *dev)
++{
++	struct gbe_priv *p = netdev_priv(dev);
++	unsigned int head, off, aligned;
++	unsigned int len = skb->len;
++	unsigned long flags;
++
++	if (len < ETH_ZLEN)
++		len = ETH_ZLEN;
++	if (len > GBE_RX_BUF_LEN) {
++		p->cnt_tx_drop_big++;
++		dev->stats.tx_dropped++;
++		dev_kfree_skb_any(skb);
++		return NETDEV_TX_OK;
++	}
++
++	spin_lock_irqsave(&p->lock, flags);
++
++	/* free up whatever the chip already finished before we go looking for room */
++	gbe_tx_complete(p);
++
++	head = p->tx_head;
++	if (((head + 1) % GBE_RING_SIZE) == p->tx_tail) {
++		p->cnt_tx_busy++;
++		netif_stop_queue(dev);
++		spin_unlock_irqrestore(&p->lock, flags);
++		return NETDEV_TX_BUSY;
++	}
++
++	p->cnt_tx_pkts++;
++
++	/* wrap scratch offset if packet doesn't fit at the end */
++	aligned = (len + 0x7f) & ~0x7fu;
++	off = p->tx_scratch_off;
++	if (off + aligned > GBE_TX_SCRATCH_SIZE)
++		off = 0;
++	p->tx_scratch_off = off + aligned;
++	if (p->tx_scratch_off >= GBE_TX_SCRATCH_SIZE)
++		p->tx_scratch_off = 0;
++
++	/* copy into the bounce region and zero-pad shrot frames */
++	skb_copy_bits(skb, 0, (u8 *)p->tx_scratch + off, skb->len);
++	if (len > skb->len)
++		memset((u8 *)p->tx_scratch + off + skb->len, 0, len - skb->len);
++
++	p->tx_ring[head].buf_addr = cpu_to_le32(p->tx_scratch_dma + off);
++	p->tx_ring[head].word2 = cpu_to_le32(GBE_DESC_W2_TX);
++	p->tx_ring[head].word3 = 0;
++	dma_wmb();
++	p->tx_ring[head].flags = cpu_to_le32((len & GBE_DESC_LEN_MASK) |
++			GBE_DESC_SOP | GBE_DESC_EOP |
++			(head == GBE_RING_SIZE - 1 ? GBE_DESC_WRAP : 0));
++
++	netdev_dbg(dev, "tx[%u] len=%u off=%#x flags=%#x\n", head, len,
++		   off, le32_to_cpu(p->tx_ring[head].flags));
++
++	p->tx_head = (head + 1) % GBE_RING_SIZE;
++
++	/* if the ring is filling up clean it again so we dont wedge under load :C */
++	if ((p->tx_head + GBE_RING_SIZE - p->tx_tail) % GBE_RING_SIZE > GBE_RING_SIZE / 2)
++		gbe_tx_complete(p);
++
++	gbe_set(p, GBE_REG_TX_DMA_CTRL, GBE_DMA_KICK);
++
++	dev->stats.tx_packets++;
++	dev->stats.tx_bytes += len;
++
++	spin_unlock_irqrestore(&p->lock, flags);
++	dev_consume_skb_any(skb);
++	return NETDEV_TX_OK;
++}
++
++static int gbe_set_mac_address(struct net_device *dev, void *addr)
++{
++	struct gbe_priv *p = netdev_priv(dev);
++	struct sockaddr *sa = addr;
++
++	if (!is_valid_ether_addr(sa->sa_data))
++		return -EADDRNOTAVAIL;
++
++	eth_hw_addr_set(dev, sa->sa_data);
++	gbe_write_mac(p, dev->dev_addr);
++	return 0;
++}
++
++/* no hw filter wired up yet, just log what got asked for */
++static void gbe_set_rx_mode(struct net_device *dev)
++{
++	struct gbe_priv *p = netdev_priv(dev);
++	struct netdev_hw_addr *ha;
++	int mc_count = 0;
++
++	netdev_for_each_mc_addr(ha, dev)
++		mc_count++;
++
++	netdev_info(dev,
++		"rx_mode: flags=%#x %s%s%s%s mc_count=%d\n",
++		dev->flags,
++		(dev->flags & IFF_PROMISC)   ? "PROMISC "   : "",
++		(dev->flags & IFF_ALLMULTI)  ? "ALLMULTI "  : "",
++		(dev->flags & IFF_MULTICAST) ? "MULTICAST " : "",
++		(dev->flags & IFF_BROADCAST) ? "BROADCAST " : "",
++		mc_count);
++
++	(void)p;
++}
++
++static void gbe_get_drvinfo(struct net_device *dev, struct ethtool_drvinfo *info)
++{
++	strscpy(info->driver, KBUILD_MODNAME, sizeof(info->driver));
++}
++
++static const struct ethtool_ops gbe_ethtool_ops = {
++	.get_drvinfo	= gbe_get_drvinfo,
++	.get_link	= ethtool_op_get_link,
++};
++
++/* bit0 of the link reg is carrier, just mirror it into netdev */
++static void gbe_link_change(struct gbe_priv *p)
++{
++	u32 link_reg = gbe_rd(p, GBE_REG_LINK);
++	int up = link_reg & BIT(0);
++
++	if (up == p->link_up)
++		return;
++
++	p->link_up = up;
++	if (up) {
++		p->cnt_link_up++;
++		netif_carrier_on(p->netdev);
++		netdev_info(p->netdev, "link up (reg=%#x)\n", link_reg);
++	} else {
++		p->cnt_link_down++;
++		netif_carrier_off(p->netdev);
++		netdev_info(p->netdev, "link down (reg=%#x)\n", link_reg);
++	}
++}
++
++static void gbe_dump_stats(struct gbe_priv *p)
++{
++	netdev_dbg(p->netdev,
++		"stats: irq=%u (link=%u tx=%u rx=%u err=%u lso=%u) "
++		"tx=%u (busy=%u drop_big=%u done=%u) "
++		"rx=%u (bcast=%u mcast=%u badlen=%u nomem=%u) "
++		"link_up=%u link_down=%u lso_recover=%u link_reg=%#x\n",
++		p->cnt_irq, p->cnt_irq_link, p->cnt_irq_tx, p->cnt_irq_rx,
++		p->cnt_irq_err, p->cnt_irq_lso,
++		p->cnt_tx_pkts, p->cnt_tx_busy, p->cnt_tx_drop_big,
++		p->cnt_tx_completed,
++		p->cnt_rx_pkts, p->cnt_rx_bcast, p->cnt_rx_mcast,
++		p->cnt_rx_bad_len, p->cnt_rx_nomem,
++		p->cnt_link_up, p->cnt_link_down, p->cnt_lso_recover,
++		gbe_rd(p, GBE_REG_LINK));
++}
++
++/* link irq is masked off (autoneg pulses storm it lol), so poll it once a sec */
++static void gbe_link_poll_work(struct work_struct *work)
++{
++	struct gbe_priv *p = container_of(to_delayed_work(work),
++					  struct gbe_priv, link_poll);
++
++	gbe_link_change(p);
++
++	/*
++	 * on a cold boot the chip sometimes just never fires its first irq and
++	 * napi sits there doing nothing. if the irq count hasnt moved since last tick,
++	 * we kick it by hand and re-arm the mask.
++	 */
++	if (netif_running(p->netdev) && p->cnt_irq == p->irq_watchdog) {
++		napi_schedule(&p->napi);
++		gbe_wr(p, GBE_REG_IER, GBE_IER_MASK);
++	}
++	p->irq_watchdog = p->cnt_irq;
++
++	if (++p->poll_tick >= 10) {
++		gbe_dump_stats(p);
++		p->poll_tick = 0;
++	}
++
++	schedule_delayed_work(&p->link_poll, HZ);
++}
++
++/*
++ * the chip latches an lso error and then just sulks, wont tx until the
++ * ring gets rebuilt. so tear it down and stand it back up, same toggle as init.
++ */
++static void gbe_lso_recover(struct gbe_priv *p)
++{
++	p->cnt_lso_recover++;
++	netdev_warn(p->netdev, "LSO error, rebuilding TX ring (cnt=%u)\n",
++		    p->cnt_lso_recover);
++
++	spin_lock(&p->lock);
++	netif_stop_queue(p->netdev);
++
++	gbe_clr(p, GBE_REG_TXKICK, BIT(6));
++	gbe_set(p, GBE_REG_TXKICK, BIT(6));
++
++	gbe_init_tx_ring(p);
++	dma_wmb();
++
++	gbe_wr(p, GBE_REG_TX_RING_BASE, p->tx_ring_dma);
++	gbe_wr(p, GBE_REG_TX_RING_CUR, p->tx_ring_dma);
++	gbe_set(p, GBE_REG_TX_DMA_CTRL, BIT(0));
++
++	netif_wake_queue(p->netdev);
++	spin_unlock(&p->lock);
++}
++
++/* napi: do tx, then rx, turn irqs back on once we drop under budget */
++static int gbe_poll(struct napi_struct *napi, int budget)
++{
++	struct gbe_priv *p = container_of(napi, struct gbe_priv, napi);
++	int rx_done;
++
++	/* isr flags this when it sees an lso cause, deal with it out of hardirq */
++	if (test_and_clear_bit(GBE_ST_LSO_RECOVER, &p->state))
++		gbe_lso_recover(p);
++
++	spin_lock(&p->lock);
++	gbe_tx_complete(p);
++	gbe_set(p, GBE_REG_TX_DMA_CTRL, GBE_DMA_KICK);
++	spin_unlock(&p->lock);
++
++	rx_done = gbe_rx_poll(p, budget);
++
++	if (rx_done < budget) {
++		napi_complete_done(napi, rx_done);
++		gbe_wr(p, GBE_REG_IER, GBE_IER_MASK);
++		/* chip wont send a fresh msi for stuff that landed while ier was
++		   off, so re-check isr and re-kick or interrupts just freeze */
++		if (gbe_rd(p, GBE_REG_ISR) & GBE_IER_MASK) {
++			if (napi_schedule_prep(&p->napi)) {
++				gbe_wr(p, GBE_REG_IER, 0);
++				__napi_schedule(&p->napi);
++			}
++		}
++	}
++	return rx_done;
++}
++
++static irqreturn_t gbe_isr(int irq, void *data)
++{
++	struct gbe_priv *p = data;
++	u32 status;
++
++	status = gbe_rd(p, GBE_REG_ISR);
++	if (!status)
++		return IRQ_NONE;
++
++	/* ack everyhting we just read off */
++	gbe_wr(p, GBE_REG_ISR, status);
++
++	p->cnt_irq++;
++	if (status & GBE_ISR_LINK)
++		p->cnt_irq_link++;
++	if (status & GBE_ISR_TX_DONE)
++		p->cnt_irq_tx++;
++	if (status & GBE_ISR_RX_DONE)
++		p->cnt_irq_rx++;
++	if (status & GBE_ISR_ERRORS)
++		p->cnt_irq_err++;
++	if (status & GBE_ISR_LSO_RECOVER)
++		p->cnt_irq_lso++;
++
++	if (status & GBE_ISR_LINK)
++		gbe_link_change(p);
++
++	if (status & GBE_ISR_ERRORS) {
++		u32 err = status & GBE_ISR_ERRORS;
++
++		net_err_ratelimited("%s: HW error %#x%s%s%s%s%s%s%s\n",
++			netdev_name(p->netdev), err,
++			err & GBE_ERR_LSO_FIFO  ? " lso-fifo-empty" : "",
++			err & GBE_ERR_LSO_PROTO ? " lso-proto" : "",
++			err & GBE_ERR_RX_AXI    ? " rx-axi" : "",
++			err & GBE_ERR_IP_CKSUM  ? " ip-cksum" : "",
++			err & GBE_ERR_TCP_CKSUM ? " tcp-cksum" : "",
++			err & GBE_ERR_UDP_CKSUM ? " udp-cksum" : "",
++			err & GBE_ERR_RX_PCODE  ? " rx-pcode" : "");
++		p->netdev->stats.rx_errors++;
++	}
++
++	if (status & GBE_ISR_LSO_RECOVER)
++		set_bit(GBE_ST_LSO_RECOVER, &p->state);
++
++	/* mask irqs and let napi do the ring work out of hardirq */
++	if (napi_schedule_prep(&p->napi)) {
++		gbe_wr(p, GBE_REG_IER, 0);
++		__napi_schedule(&p->napi);
++	}
++
++	return IRQ_HANDLED;
++}
++
++static int gbe_open(struct net_device *dev)
++{
++	struct gbe_priv *p = netdev_priv(dev);
++	int ret;
++
++	ret = request_irq(p->irq, gbe_isr, IRQF_SHARED, dev->name, p);
++	if (ret)
++		return ret;
++
++	p->link_up = 0;
++	netif_carrier_off(dev);
++
++	gbe_init_hw(p);
++	gbe_rx_fill(p);
++	gbe_init_rings_hw(p);
++	napi_enable(&p->napi);
++	netif_start_queue(dev);
++
++	gbe_link_change(p);
++	schedule_delayed_work(&p->link_poll, HZ);
++
++	return 0;
++}
++
++static int gbe_stop(struct net_device *dev)
++{
++	struct gbe_priv *p = netdev_priv(dev);
++
++	netif_stop_queue(dev);
++	netif_carrier_off(dev);
++
++	cancel_delayed_work_sync(&p->link_poll);
++
++	gbe_stop_dma(p);
++
++	free_irq(p->irq, p);
++	napi_disable(&p->napi);
++	return 0;
++}
++
++/* stack gave up on us, stop tx dma and stand the ring back up */
++static void gbe_tx_timeout(struct net_device *dev, unsigned int txqueue)
++{
++	struct gbe_priv *p = netdev_priv(dev);
++	int i;
++
++	spin_lock_bh(&p->lock);
++
++	gbe_set(p, GBE_REG_TX_DMA_CTRL, GBE_DMA_STOP);
++	for (i = 0; i < 1000 && (gbe_rd(p, GBE_REG_TX_DMA_CTRL) & GBE_DMA_STOP); i++)
++		;
++
++	gbe_init_tx_ring(p);
++	dma_wmb();
++
++	gbe_wr(p, GBE_REG_TX_RING_BASE, p->tx_ring_dma);
++	gbe_wr(p, GBE_REG_TX_RING_CUR, p->tx_ring_dma);
++
++	gbe_clr(p, GBE_REG_TXKICK, BIT(6));
++	gbe_set(p, GBE_REG_TXKICK, BIT(6));
++
++	gbe_set(p, GBE_REG_TX_DMA_CTRL, BIT(0) | GBE_DMA_KICK);
++
++	netif_wake_queue(dev);
++	spin_unlock_bh(&p->lock);
++}
++
++static const struct net_device_ops gbe_netdev_ops = {
++	.ndo_open		= gbe_open,
++	.ndo_stop		= gbe_stop,
++	.ndo_start_xmit		= gbe_xmit,
++	.ndo_tx_timeout		= gbe_tx_timeout,
++	.ndo_set_mac_address	= gbe_set_mac_address,
++	.ndo_set_rx_mode	= gbe_set_rx_mode,
++	.ndo_validate_addr	= eth_validate_addr,
++};
++
++static int gbe_probe(struct pci_dev *pdev, const struct pci_device_id *id)
++{
++	struct net_device *netdev;
++	struct gbe_priv *p;
++	u8 mac[ETH_ALEN];
++	int ret;
++
++	ret = pcim_enable_device(pdev);
++	if (ret)
++		return ret;
++
++	/* GBE registers are in BAR0 */
++	ret = pcim_iomap_regions(pdev, BIT(0), KBUILD_MODNAME);
++	if (ret)
++		return ret;
++
++	pci_set_master(pdev);
++
++	ret = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32));
++	if (ret)
++		return ret;
++
++	netdev = alloc_etherdev(sizeof(*p));
++	if (!netdev)
++		return -ENOMEM;
++
++	SET_NETDEV_DEV(netdev, &pdev->dev);
++
++	p		= netdev_priv(netdev);
++	p->netdev	= netdev;
++	p->pdev		= pdev;
++	p->base		= pcim_iomap_table(pdev)[0];
++	spin_lock_init(&p->lock);
++
++	ret = gbe_alloc_rings(p);
++	if (ret)
++		goto err_free;
++
++	ret = gbe_glue_map(p);
++	if (ret) {
++		dev_err(&pdev->dev, "probe: glue BAR4 map failed: %d\n", ret);
++		goto err_rings;
++	}
++
++	if (gbe_read_glue_mac(p, mac) == 0 && is_valid_ether_addr(mac)) {
++		eth_hw_addr_set(netdev, mac);
++	} else {
++		eth_hw_addr_random(netdev);
++		dev_warn(&pdev->dev, "no MAC from Salina Glue, using random %pM\n",
++			 netdev->dev_addr);
++	}
++
++	netdev->netdev_ops	= &gbe_netdev_ops;
++	netdev->ethtool_ops	= &gbe_ethtool_ops;
++	netdev->watchdog_timeo	= 5 * HZ;
++
++	netif_napi_add(netdev, &p->napi, gbe_poll);
++	INIT_DELAYED_WORK(&p->link_poll, gbe_link_poll_work);
++
++	/* device has no intx pin so msi is the only optoin here */
++	ret = pci_alloc_irq_vectors(pdev, 1, 1, PCI_IRQ_MSI | PCI_IRQ_INTX);
++	if (ret < 0) {
++		dev_err(&pdev->dev, "probe: no IRQ vectors: %d\n", ret);
++		goto err_napi;
++	}
++	p->irq = pci_irq_vector(pdev, 0);
++
++	pci_set_drvdata(pdev, netdev);
++
++	ret = register_netdev(netdev);
++	if (ret)
++		goto err_irq;
++
++	netif_carrier_off(netdev);
++
++	dev_info(&pdev->dev, "Salina GBE (chip %#x)\n", spcie_get_chip_id());
++	return 0;
++
++err_irq:
++	pci_free_irq_vectors(pdev);
++err_napi:
++	netif_napi_del(&p->napi);
++	gbe_glue_unmap(p);
++err_rings:
++	gbe_free_rings(p);
++err_free:
++	free_netdev(netdev);
++	return ret;
++}
++
++static void gbe_remove(struct pci_dev *pdev)
++{
++	struct net_device *netdev = pci_get_drvdata(pdev);
++	struct gbe_priv *p = netdev_priv(netdev);
++
++	unregister_netdev(netdev);
++	netif_napi_del(&p->napi);
++	pci_free_irq_vectors(pdev);
++	gbe_glue_unmap(p);
++	gbe_free_rings(p);
++	free_netdev(netdev);
++}
++
++static const struct pci_device_id gbe_pci_tbl[] = {
++	{ PCI_DEVICE(GBE_VENDOR_ID, GBE_DEVICE_ID) },
++	{ }
++};
++MODULE_DEVICE_TABLE(pci, gbe_pci_tbl);
++
++static struct pci_driver gbe_driver = {
++	.name		= KBUILD_MODNAME,
++	.id_table	= gbe_pci_tbl,
++	.probe		= gbe_probe,
++	.remove		= gbe_remove,
++};
++
++module_pci_driver(gbe_driver);
++
++MODULE_LICENSE("GPL");
++MODULE_AUTHOR("Armandas Kvietkus");
++MODULE_DESCRIPTION("PlayStation 5 Gigabit Ethernet driver");
+diff --git a/drivers/net/phy/mts/mts_phy.c b/drivers/net/phy/mts/mts_phy.c
+new file mode 100644
+index 0000000..91fedcc
+--- /dev/null
++++ b/drivers/net/phy/mts/mts_phy.c
+@@ -0,0 +1,404 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * PlayStation 5 Gigabit Ethernet driver
++ *
++ * Based on the MediaTek Star Ethernet MAC (mtk_star_emac).
++ */
++
++#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
++
++#include <linux/kernel.h>
++#include <linux/minmax.h>
++#include <linux/delay.h>
++#include <linux/mii.h>
++#include <linux/netdevice.h>
++#include <linux/ps5.h>
++#include "mts.h"
++
++/* bit 15 is write-arm on write and done-flag on read */
++#define SMI_ARM		BIT(15)
++#define SMI_DONE	BIT(15)
++#define SMI_BUSY	BIT(15)
++#define SMI_TIMEOUT	10000
++
++static int gbe_smi_wait(struct gbe_priv *p)
++{
++	int i;
++
++	for (i = 0; i < SMI_TIMEOUT; i++) {
++		if (gbe_rd(p, GBE_REG_SMI) & SMI_DONE)
++			return 0;
++		udelay(1);
++	}
++	return -ETIMEDOUT;
++}
++
++/* plain clause-22 mii read */
++static u16 gbe_cl22_read(struct gbe_priv *p, u8 reg)
++{
++	gbe_wr(p, GBE_REG_SMI, SMI_BUSY);
++	gbe_wr(p, GBE_REG_SMI, ((reg & 0x1f) << 8) | 0x4000);
++	if (gbe_smi_wait(p))
++		return 0;
++	return gbe_rd(p, GBE_REG_SMI) >> 16;
++}
++
++static void gbe_smi_write(struct gbe_priv *p, u8 reg, u16 val)
++{
++	gbe_wr(p, GBE_REG_SMI, SMI_BUSY);
++	gbe_wr(p, GBE_REG_SMI, ((u32)val << 16) | ((reg & 0x1f) << 8) | 0x2000);
++	gbe_smi_wait(p);
++}
++
++/* clause-45 is indirect, set the adress first then read/write the data */
++static int gbe_cl45_addr(struct gbe_priv *p, u32 sel)
++{
++	gbe_wr(p, GBE_REG_SMI, SMI_BUSY);
++	gbe_wr(p, GBE_REG_SMI, (sel & 0xffff0000) | ((sel & 0x1f) << 8) | 0x20);
++	return gbe_smi_wait(p);
++}
++
++static void gbe_cl45_write(struct gbe_priv *p, u32 sel, u16 val)
++{
++	if (gbe_cl45_addr(p, sel))
++		return;
++	gbe_wr(p, GBE_REG_SMI, SMI_BUSY);
++	gbe_wr(p, GBE_REG_SMI, ((u32)val << 16) | ((sel & 0x1f) << 8) | 0x60);
++	gbe_smi_wait(p);
++}
++
++static u16 gbe_cl45_read(struct gbe_priv *p, u32 sel)
++{
++	if (gbe_cl45_addr(p, sel))
++		return 0;
++	gbe_wr(p, GBE_REG_SMI, SMI_BUSY);
++	gbe_wr(p, GBE_REG_SMI, ((sel & 0x1f) << 8) | 0xe0);
++	if (gbe_smi_wait(p))
++		return 0;
++	return gbe_rd(p, GBE_REG_SMI) >> 16;
++}
++
++/* PCS/SerDes regs live in Salina Glue BAR4 at offset GBE_PCS_BASE */
++static u32 gbe_pcs_rd(struct gbe_priv *p, u32 off)
++{
++	return readl(p->glue_base + GBE_PCS_BASE + off);
++}
++
++/* maps a measured serdes field to its analog setting */
++static const u8 gbe_cal_lut[64] = {
++	0x7f, 0x7f, 0x7f, 0x7f, 0x7f, 0x7f, 0x7f, 0x7f,
++	0x7f, 0x7f, 0x7f, 0x7f, 0x7f, 0x7f, 0x7f, 0x7f,
++	0x7b, 0x7a, 0x75, 0x73, 0x70, 0x67, 0x64, 0x62,
++	0x57, 0x55, 0x53, 0x51, 0x48, 0x46, 0x44, 0x42,
++	0x40, 0x37, 0x35, 0x34, 0x32, 0x31, 0x30, 0x26,
++	0x24, 0x23, 0x22, 0x21, 0x20, 0x16, 0x15, 0x14,
++	0x13, 0x12, 0x11, 0x10, 0x07, 0x06, 0x05, 0x04,
++	0x03, 0x02, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
++};
++
++static u8 gbe_cal_lut_idx(u32 field)
++{
++	field &= 0x7f;
++	if (field < 2)
++		field = 1;
++	if (field >= 0x40)
++		field = 0x40;
++	return gbe_cal_lut[field - 1];
++}
++
++/* shove a cal value into the high or low byte of a lane reg */
++static void gbe_cal_lane(struct gbe_priv *p, u32 sel, u8 cal, bool high)
++{
++	u16 cur = gbe_cl45_read(p, sel);
++
++	if (high)
++		gbe_cl45_write(p, sel, (cur & 0x00ff) | (cal << 8) | 0x8000);
++	else
++		gbe_cl45_write(p, sel, (cur & 0xff00) | cal | 0x80);
++}
++
++static u16 gbe_eq_preset(u32 field)
++{
++	return (min_t(u32, field & 0x3f, 0x3c) + 3) & 0xff;
++}
++
++/* feed the measured serdes status back into the analog tunning regs :) */
++static void gbe_phy_calibrate(struct gbe_priv *p)
++{
++	u32 v;
++
++	v = gbe_pcs_rd(p, 0x68);
++	gbe_cl45_write(p, 0x000e001e, (v & 0x3f) << 8);
++	v = gbe_pcs_rd(p, 0x68);
++	gbe_cl45_write(p, 0x0115001f, (v >> 6) & 7);
++
++	v = gbe_pcs_rd(p, 0x60);
++	gbe_cal_lane(p, 0x0174001e, gbe_cal_lut_idx(v), true);
++	v = gbe_pcs_rd(p, 0x60);
++	gbe_cal_lane(p, 0x0174001e, gbe_cal_lut_idx(v >> 0x13), false);
++	v = gbe_pcs_rd(p, 0x64);
++	gbe_cal_lane(p, 0x0175001e, gbe_cal_lut_idx(v >> 6), true);
++	v = gbe_pcs_rd(p, 0x64);
++	gbe_cal_lane(p, 0x0175001e, gbe_cal_lut_idx(v >> 0x19), false);
++
++	v = gbe_pcs_rd(p, 0x5c);
++	gbe_cl45_write(p, 0x0172001e,
++		       (gbe_cl45_read(p, 0x0172001e) & 0xc0ff) | ((v >> 0xc) & 0x3f00));
++	v = gbe_pcs_rd(p, 0x60);
++	gbe_cl45_write(p, 0x0172001e,
++		       (gbe_cl45_read(p, 0x0172001e) & 0xffc0) | ((v >> 7) & 0x3f));
++	v = gbe_pcs_rd(p, 0x60);
++	gbe_cl45_write(p, 0x0173001e,
++		       (gbe_cl45_read(p, 0x0173001e) & 0xc0ff) | ((v >> 0x12) & 0x3f00));
++	v = gbe_pcs_rd(p, 0x64);
++	gbe_cl45_write(p, 0x0173001e,
++		       (gbe_cl45_read(p, 0x0173001e) & 0xffc0) | ((v >> 0xd) & 0x3f));
++
++	v = gbe_pcs_rd(p, 0x5c) >> 0x1a;
++	gbe_cl45_write(p, 0x0012001e, (v << 0xa) | v);
++	gbe_cl45_write(p, 0x0016001e, (gbe_eq_preset(v) << 0xa) | v);
++	v = gbe_pcs_rd(p, 0x60) >> 0xd;
++	gbe_cl45_write(p, 0x0017001e, ((v & 0x3f) << 8) | (v & 0x3f));
++	gbe_cl45_write(p, 0x0018001e, (gbe_eq_preset(v) << 8) | (v & 0x3f));
++	v = gbe_pcs_rd(p, 0x64);
++	gbe_cl45_write(p, 0x0019001e, ((v & 0x3f) << 8) | (v & 0x3f));
++	gbe_cl45_write(p, 0x0020001e, (gbe_eq_preset(v) << 8) | (v & 0x3f));
++	v = gbe_pcs_rd(p, 0x64) >> 0x13;
++	gbe_cl45_write(p, 0x0021001e, ((v & 0x3f) << 8) | (v & 0x3f));
++	gbe_cl45_write(p, 0x0022001e, (gbe_eq_preset(v) << 8) | (v & 0x3f));
++
++	gbe_cl45_write(p, 0x0096001e, 0x8000);
++	gbe_cl45_write(p, 0x0037001e, 0x0033);
++	gbe_cl45_write(p, 0x0039001e, gbe_cl45_read(p, 0x0039001e) & 0xb7ff);
++	gbe_cl45_write(p, 0x0107001f, gbe_cl45_read(p, 0x0107001f) & 0xefff);
++	gbe_cl45_write(p, 0x0171001e, gbe_cl45_read(p, 0x0171001e) | 0x0180);
++	gbe_cl45_write(p, 0x0039001e, gbe_cl45_read(p, 0x0039001e) | 0x2000);
++	gbe_cl45_write(p, 0x0039001e, gbe_cl45_read(p, 0x0039001e) & 0xdfff);
++	udelay(50);
++	gbe_cl45_write(p, 0x0171001e, gbe_cl45_read(p, 0x0171001e) & 0xfe7f);
++}
++
++/* poking a paged register block needs this 3-write form, comes up alot */
++static void gbe_smi_paged(struct gbe_priv *p, u16 a, u16 b, u16 c)
++{
++	u16 page = gbe_cl22_read(p, 0x1f);
++
++	gbe_smi_write(p, 0x1f, 0x52b5);
++	gbe_smi_write(p, 0x11, a);
++	gbe_smi_write(p, 0x12, b);
++	gbe_smi_write(p, 0x10, c);
++	gbe_smi_write(p, 0x1f, page);
++}
++
++/* split version of the above for when the final reg 0x10 write is conditional */
++static u16 gbe_paged_begin(struct gbe_priv *p, u16 r11, u16 r12)
++{
++	u16 page = gbe_cl22_read(p, 0x1f);
++
++	gbe_smi_write(p, 0x1f, 0x52b5);
++	gbe_smi_write(p, 0x11, r11);
++	gbe_smi_write(p, 0x12, r12);
++	return page;
++}
++
++static void gbe_paged_finish(struct gbe_priv *p, u16 r10, u16 page)
++{
++	gbe_smi_write(p, 0x10, r10);
++	gbe_smi_write(p, 0x1f, page);
++}
++
++/*
++ * Analog PHY tuning sequence - pile of magic values that make link work.
++ * 4-way branch on (chip_id, revision_id), not sure which ps5 rev is which:
++ *   0x110000 / 0x0100  path A  PS5
++ *   0x110000 / 0x0200  path C  PS5
++ *   0x110000 / other   path B  PS5 (other rev)
++ *   != 0x110000        path D  other chip
++ */
++static void gbe_phy_static_init(struct gbe_priv *p)
++{
++	u32 chip, rev;
++
++	gbe_cl45_write(p, 0x003e001e, 0xf8f8);
++	gbe_cl45_write(p, 0x0189001e, 0x0110);
++	gbe_smi_paged(p, 0xb90a, 0x006f, 0x8f82);
++	gbe_smi_paged(p, 0xbaef, 0x002e, 0x968c);
++
++	/* page-3 LED config */
++	gbe_smi_write(p, 0x1f, 0x0003);
++	gbe_smi_write(p, 0x1c, 0x0c92);
++	gbe_smi_write(p, 0x1f, 0x0000);
++
++	gbe_wr(p, GBE_REG_RX_PCODE + 4, 25000000);
++
++	gbe_cl45_write(p, 0x0122001e, 0xffff);
++	gbe_cl45_write(p, 0x0234001e, 0x0180);
++	gbe_smi_paged(p, 0x2e00, 0x000e, 0x8fb0);
++
++	gbe_cl45_write(p, 0x0238001e, 0x0120);
++	if (spcie_get_chip_id() == 0x110000)
++		gbe_cl45_write(p, 0x0120001e, 0x9014);
++	gbe_cl45_write(p, 0x0239001e, 0x0117);
++	gbe_smi_paged(p, 0x0001, 0x0004, 0x96a2);
++
++	gbe_clr(p, GBE_REG_RX_PCODE, BIT(0));
++
++	gbe_cl45_write(p, 0x003c0007, 0x0000);
++	gbe_cl45_write(p, 0x0033001e, gbe_cl45_read(p, 0x0033001e) & 0xefff);
++	gbe_cl45_write(p, 0x0268001f, 0x07f4);
++
++	gbe_smi_paged(p, 0x0004, 0x0000, 0x9686);
++	gbe_smi_paged(p, 0x0671, 0x0006, 0x8fae);
++	gbe_smi_paged(p, 0x55a0, 0x0000, 0x83aa);
++
++	gbe_cl45_write(p, 0x0123001e, 0xffff);
++
++	gbe_smi_paged(p, 0x8670, 0x0001, 0x96a6);
++	gbe_smi_paged(p, 0x0072, 0x0000, 0x96b6);
++	gbe_smi_paged(p, 0x3210, 0x0000, 0x96b8);
++	gbe_smi_paged(p, 0x024a, 0x0000, 0x96a8);
++
++	chip = spcie_get_chip_id();
++	rev = spcie_get_revision_id();
++	netdev_info(p->netdev, "PHY tune: chip=%#x rev=%#x\n", chip, rev);
++
++	if (chip == 0x110000) {
++		if (rev == 0x0100) {
++			u16 page;
++
++			netdev_info(p->netdev, "PHY tune: path A (0x110100)\n");
++			gbe_smi_paged(p, 0x704d, 0x0000, 0x9698);
++			gbe_smi_paged(p, 0x314f, 0x0002, 0x969a);
++			page = gbe_paged_begin(p, 0x4444, 0x0044);
++			gbe_paged_finish(p, 0x8ecc, page);
++		} else if (rev == 0x0200) {
++			u16 page;
++
++			netdev_info(p->netdev, "PHY tune: path C (0x110200)\n");
++			gbe_smi_paged(p, 0x5010, 0x0000, 0x96a0);
++			gbe_smi_paged(p, 0x3028, 0x0000, 0x969e);
++			gbe_smi_paged(p, 0x504d, 0x0000, 0x9698);
++			page = gbe_paged_begin(p, 0x194f, 0x0002);
++			gbe_paged_finish(p, 0x969a, page);
++		} else {
++			/* path B: PS5 - this rev skips the final reg 0x10 write */
++			netdev_info(p->netdev, "PHY tune: path B (subsys %#x)\n", rev);
++			gbe_smi_paged(p, 0x5010, 0x0000, 0x96a0);
++			gbe_smi_paged(p, 0x3028, 0x0000, 0x969e);
++			gbe_smi_paged(p, 0x504d, 0x0000, 0x9698);
++			gbe_smi_paged(p, 0x194f, 0x0002, 0x969a);
++			gbe_cl45_write(p, 0x014a001e, 0xee20);
++			gbe_cl45_write(p, 0x019b001e, 0x0111);
++			goto skip_path_d_continuation;
++		}
++	} else {
++		u16 page;
++
++		netdev_info(p->netdev, "PHY tune: path D (chip %#x)\n", chip);
++		gbe_smi_paged(p, 0x5010, 0x0000, 0x96a0);
++		gbe_smi_paged(p, 0x3028, 0x0000, 0x969e);
++		gbe_smi_paged(p, 0x504d, 0x0000, 0x9698);
++		gbe_smi_paged(p, 0x194f, 0x0002, 0x969a);
++
++		gbe_cl45_write(p, 0x014a001e, 0xee20);
++		gbe_cl45_write(p, 0x019b001e, 0x0111);
++		gbe_cl45_write(p, 0x0144001e, 0x0200);
++
++		gbe_smi_write(p, 0x1f, 0x0003);
++		gbe_smi_write(p, 0x1d, 0x03fb);
++		gbe_smi_write(p, 0x1f, 0x0000);
++
++		gbe_cl45_write(p, 0x0323001e, 0x0011);
++		gbe_smi_paged(p, 0x0036, 0x0000, 0x8f80);
++
++		gbe_cl45_write(p, 0x0120001e, 0x8014);
++
++		page = gbe_paged_begin(p, 0xff3f, 0x0000);
++		gbe_paged_finish(p, 0x83ae, page);
++
++		gbe_cl45_write(p, 0x0000001e, 0x0186);
++		gbe_cl45_write(p, 0x0001001e, 0x01c5);
++		gbe_cl45_write(p, 0x0002001e, 0x01c8);
++		gbe_cl45_write(p, 0x0003001e, 0x010e);
++		gbe_cl45_write(p, 0x0004001e, 0x0202);
++		gbe_cl45_write(p, 0x0005001e, 0x0207);
++		gbe_cl45_write(p, 0x0006001e, 0x0386);
++		gbe_cl45_write(p, 0x0007001e, 0x03c5);
++		gbe_cl45_write(p, 0x0008001e, 0x03c8);
++		gbe_cl45_write(p, 0x0009001e, 0x030a);
++		gbe_cl45_write(p, 0x000a001e, 0x0005);
++		gbe_cl45_write(p, 0x000b001e, 0x0008);
++	}
++
++skip_path_d_continuation:
++	gbe_cl45_write(p, 0x003e001e, 0x0000);
++}
++
++int gbe_phy_init(struct gbe_priv *p)
++{
++	u16 bmcr;
++
++	gbe_cl22_read(p, MII_PHYSID1);
++	gbe_cl22_read(p, MII_PHYSID2);
++
++	gbe_wr(p, GBE_REG_RESET, 9);
++	usleep_range(680, 1000);
++
++	/* both SerDes lanes must be locked before calibraton is valid */
++	if (~gbe_pcs_rd(p, 0x6c) & 0x80800000)
++		netdev_info(p->netdev, "SerDes not locked, skipping calibration\n");
++	else
++		gbe_phy_calibrate(p);
++
++	gbe_phy_static_init(p);
++
++	{
++		u16 adv = gbe_cl22_read(p, MII_ADVERTISE);
++
++		gbe_smi_write(p, MII_ADVERTISE, adv & 0xf3ff);
++	}
++
++	/* clear bits 12-13 and bit 31 in LINK reg to let the link state machien settle */
++	{
++		u32 v = gbe_rd(p, GBE_REG_LINK);
++
++		gbe_wr(p, GBE_REG_LINK, v & 0x7fffcfff);
++	}
++
++	gbe_cl22_read(p, MII_ADVERTISE);
++	gbe_cl22_read(p, MII_CTRL1000);
++	gbe_smi_write(p, MII_BMCR, BMCR_PDOWN);
++
++	{
++		u16 adv = gbe_cl22_read(p, MII_ADVERTISE);
++
++		adv = (adv & 0xfe1f) | 0x01e0;
++		gbe_smi_write(p, MII_ADVERTISE, adv);
++	}
++	{
++		u16 c1000 = gbe_cl22_read(p, MII_CTRL1000);
++
++		c1000 = (c1000 & 0xfcff) | 0x0200;
++		gbe_smi_write(p, MII_CTRL1000, c1000);
++	}
++	gbe_smi_write(p, MII_BMCR, 0x1340);
++
++	bmcr = gbe_cl22_read(p, MII_BMCR);
++	gbe_smi_write(p, MII_BMCR, bmcr | (BMCR_ANENABLE | BMCR_ANRESTART));
++
++	{
++		u16 id1 = gbe_cl22_read(p, MII_PHYSID1);
++		u16 id2 = gbe_cl22_read(p, MII_PHYSID2);
++		u16 b_bmcr = gbe_cl22_read(p, MII_BMCR);
++		u16 b_bmsr = gbe_cl22_read(p, MII_BMSR);
++		u16 b_adv  = gbe_cl22_read(p, MII_ADVERTISE);
++		u16 b_c1k  = gbe_cl22_read(p, MII_CTRL1000);
++
++		netdev_info(p->netdev,
++			"phy id=%04x:%04x bmcr=%04x bmsr=%04x adv=%04x ctrl1000=%04x link_reg=%08x\n",
++			id1, id2, b_bmcr, b_bmsr, b_adv, b_c1k,
++			gbe_rd(p, GBE_REG_LINK));
++	}
++
++	return 0;
++}
