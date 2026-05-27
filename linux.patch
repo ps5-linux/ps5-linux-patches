@@ -468,6 +468,647 @@ index 53fbd2e0acdd..d36c1909e0e6 100644
  obj-$(CONFIG_S390)		+= s390/
 +
 +obj-$(CONFIG_X86_PS5)		+= ps5/
+diff --git a/drivers/ata/Kconfig b/drivers/ata/Kconfig
+index 2349bca136e0..3efbb88fdc32 100644
+--- a/drivers/ata/Kconfig
++++ b/drivers/ata/Kconfig
+@@ -299,6 +299,18 @@ config AHCI_QORIQ
+ 
+ 	  If unsure, say N.
+ 
++config AHCI_SALINA
++	tristate "Sony PlayStation 5 Salina SATA / BD-ROM AHCI support"
++	depends on PCI
++	depends on X86_PS5 || COMPILE_TEST
++	select SATA_HOST
++	help
++	  This option enables support for the PlayStation 5 "Salina" SATA
++	  AHCI controller (PCI 104d:9105 / 104d:9106) that fronts the
++	  internal Blu-ray drive.
++
++	  If unsure, say N.
++
+ config SATA_FSL
+ 	tristate "Freescale 3.0Gbps SATA support"
+ 	depends on FSL_SOC || COMPILE_TEST
+diff --git a/drivers/ata/Makefile b/drivers/ata/Makefile
+index 20e6645ab737..bc98a92325b7 100644
+--- a/drivers/ata/Makefile
++++ b/drivers/ata/Makefile
+@@ -27,6 +27,8 @@ obj-$(CONFIG_AHCI_ST)		+= ahci_st.o libahci.o libahci_platform.o
+ obj-$(CONFIG_AHCI_TEGRA)	+= ahci_tegra.o libahci.o libahci_platform.o
+ obj-$(CONFIG_AHCI_XGENE)	+= ahci_xgene.o libahci.o libahci_platform.o
+ obj-$(CONFIG_AHCI_QORIQ)	+= ahci_qoriq.o libahci.o libahci_platform.o
++obj-$(CONFIG_AHCI_SALINA)	+= ahci_salina_drv.o libahci.o
++ahci_salina_drv-y		:= ahci_salina.o ahci_salina_phy.o
+ 
+ # SFF w/ custom DMA
+ obj-$(CONFIG_PDC_ADMA)		+= pdc_adma.o
+diff --git a/drivers/ata/ahci_salina.c b/drivers/ata/ahci_salina.c
+new file mode 100644
+index 000000000000..1ba1ba77f86d
+--- /dev/null
++++ b/drivers/ata/ahci_salina.c
+@@ -0,0 +1,357 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * PlayStation 5 Salina SATA / BD-ROM AHCI host driver
++ *
++ */
++
++#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
++
++#include <linux/module.h>
++#include <linux/pci.h>
++#include <linux/io.h>
++#include <linux/dma-mapping.h>
++#include <linux/pm.h>
++#include <linux/libata.h>
++#include <linux/ps5.h>
++#include <scsi/scsi_host.h>
++
++#include "ahci.h"
++#include "ahci_salina_phy.h"
++
++#define SALINA_ICC_POWER_SVC	0x05
++#define SALINA_ICC_POWER_SET	0x00
++#define SALINA_ICC_DEV_BD	0x01
++
++static void salina_bd_icc_power_on(struct device *dev)
++{
++	u8 q[ICC_MSG_MAX_SIZE] = {0};
++	u8 r[ICC_MSG_MAX_SIZE] = {0};
++	struct icc_msg *m = (struct icc_msg *)q;
++	int rc;
++
++	m->service_id	= SALINA_ICC_POWER_SVC;
++	m->msg_type	= SALINA_ICC_POWER_SET;
++	m->length	= 0x20;
++	m->data[0]	= SALINA_ICC_DEV_BD;
++	m->data[1]	= 0x01;
++
++	rc = icc_query(q, r);
++	if (rc == -ETIMEDOUT)
++		dev_info(dev, "BD drive already powered on\n");
++	else if (rc)
++		dev_warn(dev, "ICC BD power-on returned %d\n", rc);
++}
++
++struct salina_ahci {
++	struct salina_sata_phy	phy;
++	struct pci_dev		*glue;
++};
++
++static int salina_glue_map(struct salina_ahci *sa)
++{
++	struct pci_dev *glue;
++
++	glue = pci_get_device(SALINA_VENDOR_ID, SALINA_GLUE_ID, NULL);
++	if (!glue)
++		return -ENODEV;
++
++	if (!(pci_resource_flags(glue, 2) & IORESOURCE_MEM) ||
++	    !(pci_resource_flags(glue, 4) & IORESOURCE_MEM)) {
++		pci_dev_put(glue);
++		return -ENODEV;
++	}
++
++	sa->phy.glue_phy = ioremap(pci_resource_start(glue, 2),
++				   pci_resource_len(glue, 2));
++	if (!sa->phy.glue_phy) {
++		pci_dev_put(glue);
++		return -ENOMEM;
++	}
++
++	sa->phy.glue_pcs = ioremap(pci_resource_start(glue, 4),
++				   pci_resource_len(glue, 4));
++	if (!sa->phy.glue_pcs) {
++		iounmap(sa->phy.glue_phy);
++		sa->phy.glue_phy = NULL;
++		pci_dev_put(glue);
++		return -ENOMEM;
++	}
++
++	sa->glue = glue;
++	return 0;
++}
++
++static void salina_glue_unmap(struct salina_ahci *sa)
++{
++	if (sa->phy.glue_pcs) {
++		iounmap(sa->phy.glue_pcs);
++		sa->phy.glue_pcs = NULL;
++	}
++	if (sa->phy.glue_phy) {
++		iounmap(sa->phy.glue_phy);
++		sa->phy.glue_phy = NULL;
++	}
++	if (sa->glue) {
++		pci_dev_put(sa->glue);
++		sa->glue = NULL;
++	}
++}
++
++static int salina_pick_bar(u16 devid, u32 chip_id, unsigned int *abar,
++			   u32 *port_off)
++{
++	bool is_9106 = (devid == SALINA_SATA_ID_B);
++
++	if (!is_9106 && chip_id == SALINA_CHIP_SALINA2)
++		return -ENODEV;
++
++	*abar = 0;
++	*port_off = is_9106 ? 0x2000 : 0;
++	return 0;
++}
++
++static struct ata_port_operations salina_ahci_ops = {
++	.inherits = &ahci_ops,
++};
++
++static const struct ata_port_info salina_port_info = {
++	.flags		= AHCI_FLAG_COMMON,
++	.pio_mask	= ATA_PIO4,
++	.udma_mask	= ATA_UDMA6,
++	.port_ops	= &salina_ahci_ops,
++};
++
++static const struct scsi_host_template salina_ahci_sht = {
++	AHCI_SHT(KBUILD_MODNAME),
++};
++
++static int salina_ahci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
++{
++	struct device *dev = &pdev->dev;
++	const struct ata_port_info *ppi[] = { &salina_port_info, NULL };
++	struct ahci_host_priv *hpriv;
++	struct ata_host *host;
++	struct salina_ahci *sa;
++	unsigned int abar, n_ports;
++	u32 chip_id;
++	int rc;
++
++	if (!spcie_is_initialized()) {
++		dev_warn(dev, "spcie not initialized yet, deferring\n");
++		return -EPROBE_DEFER;
++	}
++
++	rc = pcim_enable_device(pdev);
++	if (rc)
++		return rc;
++
++	pci_set_master(pdev);
++
++	rc = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(32));
++	if (rc)
++		return rc;
++
++	sa = devm_kzalloc(dev, sizeof(*sa), GFP_KERNEL);
++	if (!sa)
++		return -ENOMEM;
++
++	rc = salina_glue_map(sa);
++	if (rc) {
++		dev_err(dev, "glue (104d:9107) map failed: %d\n", rc);
++		return rc;
++	}
++
++	chip_id = spcie_get_chip_id();
++	if (chip_id != SALINA_CHIP_SALINA && chip_id != SALINA_CHIP_SALINA2) {
++		dev_err(dev, "unknown Salina chip id %#x\n", chip_id);
++		rc = -ENODEV;
++		goto err_glue;
++	}
++
++	rc = salina_pick_bar(pdev->device, chip_id, &abar, &sa->phy.port_off);
++	if (rc) {
++		dev_info(dev, "SALINA2 SATA0 dummy device, claiming but not attaching\n");
++		pci_set_drvdata(pdev, NULL);
++		salina_glue_unmap(sa);
++		return 0;
++	}
++
++	rc = pcim_iomap_regions(pdev, BIT(abar), KBUILD_MODNAME);
++	if (rc)
++		goto err_glue;
++
++	sa->phy.ctrl		= pcim_iomap_table(pdev)[abar];
++	sa->phy.chip_id		= chip_id;
++	sa->phy.devid		= (pdev->device << 16) | pdev->vendor;
++	sa->phy.is_bd		= true;
++	sa->phy.rx_tracelen	= 0xff;
++	sa->phy.tx_tracelen	= 0xff;
++
++	salina_bd_icc_power_on(dev);
++
++	rc = salina_sata_phy_init(&sa->phy);
++	if (rc) {
++		dev_err(dev, "Salina SATA PHY init failed: %d\n", rc);
++		goto err_glue;
++	}
++
++	hpriv = devm_kzalloc(dev, sizeof(*hpriv), GFP_KERNEL);
++	if (!hpriv) {
++		rc = -ENOMEM;
++		goto err_glue;
++	}
++
++	hpriv->mmio = sa->phy.ctrl + sa->phy.port_off;
++	hpriv->plat_data = sa;
++	hpriv->flags = AHCI_HFLAG_NO_PMP;
++
++	ahci_save_initial_config(dev, hpriv);
++
++	rc = pci_alloc_irq_vectors(pdev, 1, 1, PCI_IRQ_MSI | PCI_IRQ_INTX);
++	if (rc < 0) {
++		dev_err(dev, "irq alloc failed: %d\n", rc);
++		goto err_glue;
++	}
++	hpriv->irq = pci_irq_vector(pdev, 0);
++
++	n_ports = max(ahci_nr_ports(hpriv->cap), fls(hpriv->port_map));
++
++	host = ata_host_alloc_pinfo(dev, ppi, n_ports);
++	if (!host) {
++		rc = -ENOMEM;
++		goto err_glue;
++	}
++	host->private_data = hpriv;
++
++	if (!(hpriv->cap & HOST_CAP_SSS))
++		host->flags |= ATA_HOST_PARALLEL_SCAN;
++
++	rc = ahci_reset_controller(host);
++	if (rc)
++		goto err_glue;
++
++	ahci_init_controller(host);
++	ahci_print_info(host, "Salina");
++
++	pci_set_drvdata(pdev, host);
++
++	dev_info(dev,
++		 "Salina SATA up (chip %#x, devid %#x, BAR%u, port_off %#x, %u ports)\n",
++		 sa->phy.chip_id, sa->phy.devid, abar, sa->phy.port_off, n_ports);
++
++	return ahci_host_activate(host, &salina_ahci_sht);
++
++err_glue:
++	salina_glue_unmap(sa);
++	return rc;
++}
++
++static void salina_ahci_remove(struct pci_dev *pdev)
++{
++	struct ata_host *host = pci_get_drvdata(pdev);
++	struct ahci_host_priv *hpriv;
++	struct salina_ahci *sa;
++
++	if (!host)
++		return;
++
++	hpriv = host->private_data;
++	sa = hpriv->plat_data;
++
++	ata_host_detach(host);
++	pci_free_irq_vectors(pdev);
++	salina_glue_unmap(sa);
++}
++
++#ifdef CONFIG_PM_SLEEP
++static int salina_ahci_suspend(struct device *dev)
++{
++	struct pci_dev *pdev = to_pci_dev(dev);
++	struct ata_host *host = pci_get_drvdata(pdev);
++	struct ahci_host_priv *hpriv;
++	void __iomem *mmio;
++	u32 ctl;
++	int rc;
++
++	if (!host)
++		return 0;
++
++	hpriv = host->private_data;
++	mmio = hpriv->mmio;
++
++	ctl = readl(mmio + HOST_CTL);
++	ctl &= ~HOST_IRQ_EN;
++	writel(ctl, mmio + HOST_CTL);
++	readl(mmio + HOST_CTL);
++
++	rc = ata_host_suspend(host, PMSG_SUSPEND);
++	if (rc)
++		return rc;
++
++	pci_save_state(pdev);
++	pci_set_power_state(pdev, PCI_D3hot);
++	return 0;
++}
++
++static int salina_ahci_resume(struct device *dev)
++{
++	struct pci_dev *pdev = to_pci_dev(dev);
++	struct ata_host *host = pci_get_drvdata(pdev);
++	struct ahci_host_priv *hpriv;
++	struct salina_ahci *sa;
++	int rc;
++
++	if (!host)
++		return 0;
++
++	hpriv = host->private_data;
++	sa = hpriv->plat_data;
++
++	rc = pci_set_power_state(pdev, PCI_D0);
++	if (rc)
++		return rc;
++	pci_restore_state(pdev);
++	pci_set_master(pdev);
++
++	rc = salina_sata_phy_init(&sa->phy);
++	if (rc) {
++		dev_err(dev, "PHY re-init on resume failed: %d\n", rc);
++		return rc;
++	}
++
++	rc = ahci_reset_controller(host);
++	if (rc)
++		return rc;
++
++	ahci_init_controller(host);
++	ata_host_resume(host);
++
++	return 0;
++}
++#endif
++
++static SIMPLE_DEV_PM_OPS(salina_ahci_pm, salina_ahci_suspend, salina_ahci_resume);
++
++static const struct pci_device_id salina_ahci_tbl[] = {
++	{ PCI_DEVICE(SALINA_VENDOR_ID, SALINA_SATA_ID_A) },
++	{ PCI_DEVICE(SALINA_VENDOR_ID, SALINA_SATA_ID_B) },
++	{ }
++};
++MODULE_DEVICE_TABLE(pci, salina_ahci_tbl);
++
++static struct pci_driver salina_ahci_driver = {
++	.name		= KBUILD_MODNAME,
++	.id_table	= salina_ahci_tbl,
++	.probe		= salina_ahci_probe,
++	.remove		= salina_ahci_remove,
++	.driver		= {
++		.pm = &salina_ahci_pm,
++	},
++};
++
++module_pci_driver(salina_ahci_driver);
++
++MODULE_AUTHOR("Armandas Kvietkus");
++MODULE_DESCRIPTION("PlayStation 5 Salina SATA / BD-ROM AHCI driver");
++MODULE_LICENSE("GPL");
++MODULE_SOFTDEP("pre: libahci spcie");
+diff --git a/drivers/ata/ahci_salina_phy.c b/drivers/ata/ahci_salina_phy.c
+new file mode 100644
+index 000000000000..c5e85ae102ea
+--- /dev/null
++++ b/drivers/ata/ahci_salina_phy.c
+@@ -0,0 +1,183 @@
++// SPDX-License-Identifier: GPL-2.0-only
++#include <linux/kernel.h>
++#include <linux/delay.h>
++#include <linux/device.h>
++#include "ahci_salina_phy.h"
++
++static inline u32 phy_rd(struct salina_sata_phy *p, u32 off)
++{
++	return readl(p->ctrl + off);
++}
++
++static inline void phy_wr(struct salina_sata_phy *p, u32 off, u32 val)
++{
++	writel(val, p->ctrl + off);
++}
++
++static inline void phy_rmw(struct salina_sata_phy *p, u32 off, u32 keep, u32 set)
++{
++	phy_wr(p, off, (phy_rd(p, off) & keep) | set);
++}
++
++static inline u32 port_rd(struct salina_sata_phy *p, u32 off)
++{
++	return readl(p->ctrl + p->port_off + off);
++}
++
++static inline void port_wr(struct salina_sata_phy *p, u32 off, u32 val)
++{
++	writel(val, p->ctrl + p->port_off + off);
++}
++
++static inline void lane_sel(struct salina_sata_phy *p, u32 sel, u32 val)
++{
++	writel(val, p->glue_phy + SALINA_GLUE_PHY_BASE + sel);
++}
++
++static inline u32 efuse_rd(struct salina_sata_phy *p, u32 off)
++{
++	return readl(p->glue_pcs + SALINA_GLUE_PCS_BASE + off);
++}
++
++static u32 trace_len(struct salina_sata_phy *p, u32 raw)
++{
++	u32 def = p->is_bd ? 10 : 4;
++
++	if (raw == 0 || raw > 0xfe)
++		return def;
++	return (raw >> 5 & 7) + (raw & 0x1f);
++}
++
++int salina_sata_phy_init(struct salina_sata_phy *p)
++{
++	u32 trim[6];
++	u32 efuse, valid, sel, lane;
++	u32 rx, tx;
++	u32 a, b, c, d, e, f, rc;
++	bool tx_hi;
++
++	sel = (p->devid != SALINA_DEVID_A) ? SALINA_PHY_SEL_B : SALINA_PHY_SEL_A;
++	lane_sel(p, sel, 2);
++	lane_sel(p, sel, 3);
++	lane_sel(p, sel, 1);
++
++	efuse = efuse_rd(p, SALINA_EFUSE_TRIM);
++	valid = efuse_rd(p, SALINA_EFUSE_VALID);
++
++	trim[0] = trim[1] = trim[2] = trim[3] = 0x10;
++	trim[4] = trim[5] = 0x28;
++
++	if (valid & SALINA_EFUSE_VALID_A) {
++		trim[4] = efuse & 0x3f;
++		trim[2] = efuse >> 6 & 0x1f;
++		trim[0] = efuse >> 0xb & 0x1f;
++	}
++	if (valid & SALINA_EFUSE_VALID_B) {
++		trim[5] = efuse >> 0x10 & 0x3f;
++		trim[3] = efuse >> 0x16 & 0x1f;
++		trim[1] = efuse >> 0x1b;
++	}
++
++	lane = (p->devid != SALINA_DEVID_A) ? 1 : 0;
++
++	phy_rmw(p, 0xa0, 0xfbff03ff, (trim[lane + 4] << 10) | 0x4000000);
++	phy_rmw(p, 0x14, ~0u, 0x100000);
++	phy_rmw(p, 0x54, 0xfffff07f, trim[lane + 2] << 7);
++	phy_rmw(p, 0x1c, ~0u, 4);
++	phy_rmw(p, 0x78, 0xfffffe0f, trim[lane] << 4);
++
++	rx = trace_len(p, p->rx_tracelen);
++	tx = trace_len(p, p->tx_tracelen);
++
++	tx_hi = tx > 5;
++	if (tx_hi) {
++		c = 0x2000;
++		if (tx < 9) {
++			b = 0x1000000;
++			a = 0x200000;
++		} else {
++			a = (tx <= 0xc) ? 0x230000 : 0x260000;
++			b = (tx > 0xc) ? 0x9000000 : 0x5000000;
++		}
++	} else {
++		b = 0;
++		a = (tx >= 3) ? 0x1e0000 : 0x1d0000;
++		c = (tx < 3) ? 0x4000 : 0x2000;
++	}
++
++	e = (tx > 8) ? 0x4000 : 0;
++	f = (tx > 8) ? 0x80 : 0;
++	d = e | 0x12000;
++	rc = f | 0x900;
++	e += 0x6000;
++	f += 0x8c0;
++	if (tx < 6) {
++		u32 ge3 = (tx >= 3) ? 1 : 0;
++
++		d = ge3 * 0x1000 + 0xd000;
++		rc = (ge3 * 0x40) | 0x880;
++		e = ge3 << 0xd;
++		f = ge3 * 0x40 + 0x800;
++	}
++
++	phy_rmw(p, 0x4c, 0xffc0ffff, a);
++	phy_rmw(p, 0x4c, 0xc0ffffff, b);
++	phy_rmw(p, 0x54, 0xffff9fff, c);
++	phy_rmw(p, 0x7c, 0xfffff03f, f);
++	phy_rmw(p, 0x7c, 0xfffc0fff, e);
++	phy_rmw(p, 0x5c, 0x0fffffff, (tx < 3) ? 0x60000000 : 0x50000000);
++	phy_rmw(p, 0x80, 0xfffff03f, rc);
++	phy_rmw(p, 0x80, 0xfffc0fff, d);
++	phy_rmw(p, 0x4c, 0xfffffff0, tx_hi ? 5 : 3);
++
++	{
++		u32 rx_coef, rx_amp, rx_eq;
++
++		if (rx < 3) {
++			rx_coef = 0x100;
++			rx_amp = 0x40;
++			rx_eq = 2;
++		} else if (rx < 6) {
++			rx_coef = 0x100;
++			rx_amp = 0x50;
++			rx_eq = 3;
++		} else {
++			rx_amp = 0x60;
++			rx_coef = 0x200;
++			rx_eq = 5;
++		}
++		phy_rmw(p, 0x6c, 0xfffff0ff, rx_coef);
++		phy_rmw(p, 0x84, 0xffffff00, rx_amp | rx_eq);
++	}
++
++	phy_rmw(p, 0x40, 0xffffffe0, 0x12);
++	phy_rmw(p, 0x40, 0xffffc0ff, 0x3100);
++	phy_rmw(p, 0x40, 0xffe0ffff, 0xe0000);
++	phy_rmw(p, 0x40, 0xffffff1f, 0x80);
++	phy_rmw(p, 0x3c, 0x1fffefff, 0xa0000000);
++	phy_rmw(p, 0x44, 0xffffef80, 0x23);
++	phy_rmw(p, 0x1c, 0xff0fffff, 0x200000);
++	phy_rmw(p, 0xdc, 0xffffe0ff, 0x400);
++	phy_rmw(p, 0x24, ~0u, 0x30);
++
++	lane_sel(p, sel, 0);
++
++	{
++		int i;
++
++		for (i = 0; i < 100; i++) {
++			if (port_rd(p, SALINA_PHY_RDY_REG) & SALINA_PHY_RDY)
++				break;
++			udelay(10);
++		}
++		if (i == 100)
++			return -ETIMEDOUT;
++	}
++
++	port_wr(p, 0, port_rd(p, 0) & 0xe7ffffff);
++	port_wr(p, 0xc, 1);
++	port_wr(p, 0xb8, port_rd(p, 0xb8) | 0x20000);
++	port_wr(p, 0x118, (port_rd(p, 0x118) & 0xffe3ffff) | 0x40000);
++
++	return 0;
++}
+diff --git a/drivers/ata/ahci_salina_phy.h b/drivers/ata/ahci_salina_phy.h
+new file mode 100644
+index 000000000000..71a33382d920
+--- /dev/null
++++ b/drivers/ata/ahci_salina_phy.h
+@@ -0,0 +1,47 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef _SALINA_SATA_PHY_H
++#define _SALINA_SATA_PHY_H
++
++#include <linux/types.h>
++#include <linux/io.h>
++
++#define SALINA_VENDOR_ID	0x104d
++#define SALINA_SATA_ID_A	0x9105
++#define SALINA_SATA_ID_B	0x9106
++#define SALINA_GLUE_ID		0x9107
++
++#define SALINA_DEVID_A		0x9105104d
++#define SALINA_DEVID_B		0x9106104d
++
++#define SALINA_CHIP_SALINA	0x110000
++#define SALINA_CHIP_SALINA2	0x120000
++
++#define SALINA_GLUE_PHY_BASE	0x180000
++#define SALINA_GLUE_PCS_BASE	0x4000
++
++#define SALINA_EFUSE_TRIM	0x48
++#define SALINA_EFUSE_VALID	0x6c
++#define SALINA_EFUSE_VALID_A	0x40000
++#define SALINA_EFUSE_VALID_B	0x4000000
++
++#define SALINA_PHY_SEL_A	0x2c
++#define SALINA_PHY_SEL_B	0x30
++
++#define SALINA_PHY_RDY		BIT(0)
++#define SALINA_PHY_RDY_REG	0xdc
++
++struct salina_sata_phy {
++	void __iomem	*ctrl;
++	void __iomem	*glue_phy;
++	void __iomem	*glue_pcs;
++	u32		port_off;
++	u32		chip_id;
++	u32		devid;
++	u32		rx_tracelen;
++	u32		tx_tracelen;
++	bool		is_bd;
++};
++
++int salina_sata_phy_init(struct salina_sata_phy *p);
++
++#endif
 diff --git a/drivers/firmware/dmi-id.c b/drivers/firmware/dmi-id.c
 index 477a37e2ef80..e1af70946c89 100644
 --- a/drivers/firmware/dmi-id.c
