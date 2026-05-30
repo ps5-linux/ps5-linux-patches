@@ -1440,7 +1440,7 @@ index 8b60299b73ef..0a3ad54066d6 100644
 +	 * (verified empirically on BC-250). */
 +	if (ps5_cu_unlock > 0 &&
 +	    adev->pdev->vendor == PCI_VENDOR_ID_ATI &&
-+	    adev->pdev->device == PS5_PCI_DEVID_RETAIL) {
++	    adev->asic_type == CHIP_CYAN_SKILLFISH) {
 +		int ps5_se, ps5_sh;
 +		for (ps5_se = 0; ps5_se < adev->gfx.config.max_shader_engines; ps5_se++) {
 +			for (ps5_sh = 0; ps5_sh < adev->gfx.config.max_sh_per_se; ps5_sh++) {
