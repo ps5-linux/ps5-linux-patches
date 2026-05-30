@@ -1420,7 +1420,7 @@ index 8b60299b73ef..0a3ad54066d6 100644
 + *   amdgpu.ps5_cu_unlock=0   (disable)
 + *   amdgpu.ps5_cu_unlock=1   (probe)
 + */
-+static int ps5_cu_unlock = 3;
++static int ps5_cu_unlock = 0;
 +module_param(ps5_cu_unlock, int, 0444);
 +MODULE_PARM_DESC(ps5_cu_unlock,
 +	"PS5 harvested-CU unlock (0=off, 1=probe, 2=SE0/SH0, 3=all (default), 4=probe-all)");
