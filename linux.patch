@@ -1505,7 +1505,7 @@ index e3a035c9fece..6eb67dd7b52c 100644
  	if (r)
  		return r;
 diff --git a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c
-index 0aee65503642..1ca2bcd7755d 100644
+index 0aee65503642..3ae712111a93 100644
 --- a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c
 +++ b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c
 @@ -80,6 +80,10 @@
@@ -1566,33 +1566,44 @@ index 0aee65503642..1ca2bcd7755d 100644
  	if ((mode->flags & DRM_MODE_FLAG_INTERLACE) ||
  			(mode->flags & DRM_MODE_FLAG_DBLSCAN))
  		return result;
-@@ -10458,6 +10479,9 @@ static void amdgpu_dm_commit_streams(struct drm_atomic_state *state,
- 				      new_crtc_state, i) {
- 		struct amdgpu_crtc *acrtc = to_amdgpu_crtc(crtc);
+@@ -10889,12 +10910,58 @@ static void amdgpu_dm_atomic_commit_tail(struct drm_atomic_state *state)
+ 	drm_atomic_helper_update_legacy_modeset_state(dev, state);
+ 	drm_dp_mst_atomic_wait_for_dependencies(state);
  
 +#ifdef CONFIG_X86_PS5
++	for_each_oldnew_crtc_in_state(state, crtc, old_crtc_state,
++				      new_crtc_state, i) {
 +		dm_new_crtc_state = to_dm_crtc_state(new_crtc_state);
-+#endif
- 		dm_old_crtc_state = to_dm_crtc_state(old_crtc_state);
- 
- 		if (old_crtc_state->active &&
-@@ -10465,6 +10489,11 @@ static void amdgpu_dm_commit_streams(struct drm_atomic_state *state,
- 		     drm_atomic_crtc_needs_modeset(new_crtc_state))) {
- 			manage_dm_interrupts(adev, acrtc, NULL);
- 			dc_stream_release(dm_old_crtc_state->stream);
-+#ifdef CONFIG_X86_PS5
++		dm_old_crtc_state = to_dm_crtc_state(old_crtc_state);
++
++		if ((new_crtc_state->active &&
++		    (!old_crtc_state->active ||
++		     drm_atomic_crtc_needs_modeset(new_crtc_state))) ||
++		    (old_crtc_state->active &&
++		    (!new_crtc_state->active ||
++		     drm_atomic_crtc_needs_modeset(new_crtc_state)))) {
 +			if (dm_new_crtc_state->stream && dc_is_dp_signal(dm_new_crtc_state->stream->signal)) {
 +				sceHdmiInitVideoConfig();
 +			}
++		}
++	}
 +#endif
- 		}
++
+ 	dm_state = dm_atomic_get_new_state(state);
+ 	if (dm_state && dm_state->context) {
+ 		dc_state = dm_state->context;
+ 		amdgpu_dm_commit_streams(state, dc_state);
  	}
  
-@@ -11035,6 +11064,22 @@ static void amdgpu_dm_atomic_commit_tail(struct drm_atomic_state *state)
- 			dc_stream_retain(dm_new_crtc_state->stream);
- 			acrtc->dm_irq_params.stream = dm_new_crtc_state->stream;
- 			manage_dm_interrupts(adev, acrtc, dm_new_crtc_state);
 +#ifdef CONFIG_X86_PS5
++	for_each_oldnew_crtc_in_state(state, crtc, old_crtc_state,
++				      new_crtc_state, i) {
++		dm_new_crtc_state = to_dm_crtc_state(new_crtc_state);
++		dm_old_crtc_state = to_dm_crtc_state(old_crtc_state);
++
++		if (new_crtc_state->active &&
++		    (!old_crtc_state->active ||
++		     drm_atomic_crtc_needs_modeset(new_crtc_state))) {
 +			if (dm_new_crtc_state->stream && dc_is_dp_signal(dm_new_crtc_state->stream->signal)) {
 +				struct dc_stream_state *stream = dm_new_crtc_state->stream;
 +				int channels = 0;
@@ -1607,10 +1618,13 @@ index 0aee65503642..1ca2bcd7755d 100644
 +				sceHdmiSetAudioConfig(channels);
 +				sceHdmiSetAudioMute(0);
 +			}
++		}
++	}
 +#endif
- 		}
- 		/* Handle vrr on->off / off->on transitions */
- 		amdgpu_dm_handle_vrr_transition(dm_old_crtc_state, dm_new_crtc_state);
++
+ 	amdgpu_dm_update_hdcp(state);
+ 
+ 	/* Handle connector state changes */
 diff --git a/drivers/gpu/drm/amd/display/dc/core/dc_resource.c b/drivers/gpu/drm/amd/display/dc/core/dc_resource.c
 index 896f4719cf7b..0eb818421a50 100644
 --- a/drivers/gpu/drm/amd/display/dc/core/dc_resource.c
