@@ -7266,7 +7266,7 @@ new file mode 100644
 index 000000000000..e02c074ee0b1
 --- /dev/null
 +++ b/drivers/ps5/spcie.c
-@@ -0,0 +1,1149 @@
+@@ -0,0 +1,1140 @@
 +#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 +
 +#include <linux/module.h>
@@ -7847,18 +7847,9 @@ index 000000000000..e02c074ee0b1
 +		} else if (gddr6_vendor == GDDR6_SAMSUNG && gddr6_revision == 9) {
 +			gddr6_name = "Samsung D1z";
 +			param = NULL;
-+		} else if (gddr6_vendor == GDDR6_HYNIX && gddr6_revision == 0) {
-+			gddr6_name = "Hynix 1x";
++		} else if (gddr6_vendor == GDDR6_MICRON || gddr6_vendor == GDDR6_HYNIX) {
++			gddr6_name = "Micron, Hynix";
 +			param = autoservo_param_b_eiger_denali_hynix_1x_micron_120s;
-+		} else if (gddr6_vendor == GDDR6_HYNIX && gddr6_revision == 1) {
-+			gddr6_name = "Hynix 1y";
-+			param = autoservo_param_b_eiger_denali_hynix_1y_micron_130s;
-+		} else if (gddr6_vendor == GDDR6_MICRON && gddr6_revision == 0) {
-+			gddr6_name = "Micron 120s";
-+			param = autoservo_param_b_eiger_denali_hynix_1x_micron_120s;
-+		} else if (gddr6_vendor == GDDR6_MICRON && gddr6_revision == 1) {
-+			gddr6_name = "Micron 130s";
-+			param = autoservo_param_b_eiger_denali_hynix_1y_micron_130s;
 +		} else {
 +			pr_info("FanServo: %s Unknown Vendor/Revision 0x%x/0x%x\n", board_name, gddr6_vendor, gddr6_revision);
 +			goto not_updated;
