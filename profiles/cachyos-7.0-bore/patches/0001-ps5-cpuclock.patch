@@ -4,7 +4,7 @@ index 000000000..08f524452
 --- /dev/null
 +++ b/drivers/ps5/Makefile
 @@ -0,0 +1 @@
-+obj-y += spcie.o tpcie.o hdmi.o mp1.o power.o buzzer.o
++obj-y += spcie.o tpcie.o hdmi.o mp1.o buzzer.o
 diff --git a/drivers/ps5/mp1.c b/drivers/ps5/mp1.c
 new file mode 100644
 index 000000000..df9205bb2
