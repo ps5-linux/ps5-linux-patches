@@ -1,5 +1,5 @@
 diff --git a/arch/x86/Kconfig b/arch/x86/Kconfig
-index fe106da41ae5..6fd78cbfe1d6 100644
+index fe106da41..6fd78cbfe 100644
 --- a/arch/x86/Kconfig
 +++ b/arch/x86/Kconfig
 @@ -605,6 +605,14 @@ config X86_NUMACHIP
@@ -18,7 +18,7 @@ index fe106da41ae5..6fd78cbfe1d6 100644
  	bool "ScaleMP vSMP"
  	select HYPERVISOR_GUEST
 diff --git a/arch/x86/include/asm/msr-index.h b/arch/x86/include/asm/msr-index.h
-index 4efbbf9d117b..403d5ff74ef0 100644
+index 4efbbf9d1..403d5ff74 100644
 --- a/arch/x86/include/asm/msr-index.h
 +++ b/arch/x86/include/asm/msr-index.h
 @@ -26,6 +26,7 @@
@@ -38,7 +38,7 @@ index 4efbbf9d117b..403d5ff74ef0 100644
  
  /*
 diff --git a/arch/x86/include/asm/pgtable_types.h b/arch/x86/include/asm/pgtable_types.h
-index 2ec250ba467e..f4654b2e63d0 100644
+index 2ec250ba4..f4654b2e6 100644
 --- a/arch/x86/include/asm/pgtable_types.h
 +++ b/arch/x86/include/asm/pgtable_types.h
 @@ -21,8 +21,9 @@
@@ -78,7 +78,7 @@ index 2ec250ba467e..f4654b2e63d0 100644
  /*
   * Page tables needs to have Write=1 in order for any lower PTEs to be
 diff --git a/arch/x86/include/asm/setup.h b/arch/x86/include/asm/setup.h
-index 914eb32581c7..1199b0762d60 100644
+index 914eb3258..1199b0762 100644
 --- a/arch/x86/include/asm/setup.h
 +++ b/arch/x86/include/asm/setup.h
 @@ -69,6 +69,12 @@ extern void x86_ce4100_early_setup(void);
@@ -95,7 +95,7 @@ index 914eb32581c7..1199b0762d60 100644
  
  #ifndef _SETUP
 diff --git a/arch/x86/include/uapi/asm/bootparam.h b/arch/x86/include/uapi/asm/bootparam.h
-index dafbf581c515..791687363cbf 100644
+index dafbf581c..791687363 100644
 --- a/arch/x86/include/uapi/asm/bootparam.h
 +++ b/arch/x86/include/uapi/asm/bootparam.h
 @@ -207,6 +207,7 @@ enum x86_hardware_subarch {
@@ -107,7 +107,7 @@ index dafbf581c515..791687363cbf 100644
  };
  
 diff --git a/arch/x86/kernel/head64.c b/arch/x86/kernel/head64.c
-index fd28b53dbac5..569fc764d267 100644
+index fd28b53db..569fc764d 100644
 --- a/arch/x86/kernel/head64.c
 +++ b/arch/x86/kernel/head64.c
 @@ -303,6 +303,11 @@ void __init __noreturn x86_64_start_reservations(char *real_mode_data)
@@ -123,7 +123,7 @@ index fd28b53dbac5..569fc764d267 100644
  		break;
  	}
 diff --git a/arch/x86/kernel/i8253.c b/arch/x86/kernel/i8253.c
-index cb9852ad6098..83bb0cf9e40b 100644
+index cb9852ad6..83bb0cf9e 100644
 --- a/arch/x86/kernel/i8253.c
 +++ b/arch/x86/kernel/i8253.c
 @@ -31,6 +31,11 @@ struct clock_event_device *global_clock_event;
@@ -139,7 +139,7 @@ index cb9852ad6098..83bb0cf9e40b 100644
  		return true;
  
 diff --git a/arch/x86/kvm/x86.c b/arch/x86/kvm/x86.c
-index ccc7b2e34a11..7d941c4d30f6 100644
+index ccc7b2e34..7d941c4d3 100644
 --- a/arch/x86/kvm/x86.c
 +++ b/arch/x86/kvm/x86.c
 @@ -112,7 +112,11 @@ EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_host);
@@ -155,7 +155,7 @@ index ccc7b2e34a11..7d941c4d30f6 100644
  static u64 __read_mostly efer_reserved_bits = ~((u64)EFER_SCE);
  #endif
 diff --git a/arch/x86/mm/pgprot.c b/arch/x86/mm/pgprot.c
-index dc1afd5c839d..745db92fb2c1 100644
+index dc1afd5c8..745db92fb 100644
 --- a/arch/x86/mm/pgprot.c
 +++ b/arch/x86/mm/pgprot.c
 @@ -10,7 +10,11 @@ static pgprot_t protection_map[16] __ro_after_init = {
@@ -183,7 +183,7 @@ index dc1afd5c839d..745db92fb2c1 100644
  	[VM_SHARED | VM_EXEC | VM_WRITE]		= PAGE_SHARED_EXEC,
  	[VM_SHARED | VM_EXEC | VM_WRITE | VM_READ]	= PAGE_SHARED_EXEC
 diff --git a/arch/x86/pci/common.c b/arch/x86/pci/common.c
-index 63105b29fbf5..f38e2601531c 100644
+index 63105b29f..f38e26015 100644
 --- a/arch/x86/pci/common.c
 +++ b/arch/x86/pci/common.c
 @@ -57,14 +57,100 @@ int raw_pci_write(unsigned int domain, unsigned int bus, unsigned int devfn,
@@ -288,7 +288,7 @@ index 63105b29fbf5..f38e2601531c 100644
  				  devfn, where, size, value);
  }
 diff --git a/arch/x86/pci/irq.c b/arch/x86/pci/irq.c
-index 0de436316a1d..dde625251c99 100644
+index 0de436316..dde625251 100644
 --- a/arch/x86/pci/irq.c
 +++ b/arch/x86/pci/irq.c
 @@ -1720,6 +1720,11 @@ static int pirq_enable_irq(struct pci_dev *dev)
@@ -316,7 +316,7 @@ index 0de436316a1d..dde625251c99 100644
  	    dev->irq_managed && dev->irq) {
  		mp_unmap_irq(dev->irq);
 diff --git a/arch/x86/platform/Makefile b/arch/x86/platform/Makefile
-index 3ed03a2552d0..40ffa1a2156a 100644
+index 3ed03a255..40ffa1a21 100644
 --- a/arch/x86/platform/Makefile
 +++ b/arch/x86/platform/Makefile
 @@ -9,6 +9,7 @@ obj-y	+= intel/
@@ -329,14 +329,14 @@ index 3ed03a2552d0..40ffa1a2156a 100644
  obj-y	+= uv/
 diff --git a/arch/x86/platform/ps5/Makefile b/arch/x86/platform/ps5/Makefile
 new file mode 100644
-index 000000000000..5263181876f8
+index 000000000..526318187
 --- /dev/null
 +++ b/arch/x86/platform/ps5/Makefile
 @@ -0,0 +1 @@
 +obj-$(CONFIG_X86_PS5) += ps5.o
 diff --git a/arch/x86/platform/ps5/ps5.c b/arch/x86/platform/ps5/ps5.c
 new file mode 100644
-index 000000000000..731fed163a83
+index 000000000..731fed163
 --- /dev/null
 +++ b/arch/x86/platform/ps5/ps5.c
 @@ -0,0 +1,51 @@
@@ -392,7 +392,7 @@ index 000000000000..731fed163a83
 +	legacy_pic = &null_legacy_pic;
 +}
 diff --git a/block/partitions/efi.c b/block/partitions/efi.c
-index 75474fb3848e..44a0744533a0 100644
+index 75474fb38..44a074453 100644
 --- a/block/partitions/efi.c
 +++ b/block/partitions/efi.c
 @@ -90,6 +90,9 @@
@@ -459,7 +459,7 @@ index 75474fb3848e..44a0744533a0 100644
  				 &pgpt, &pptes);
          if (good_pgpt)
 diff --git a/drivers/Makefile b/drivers/Makefile
-index 53fbd2e0acdd..d36c1909e0e6 100644
+index 53fbd2e0a..d36c1909e 100644
 --- a/drivers/Makefile
 +++ b/drivers/Makefile
 @@ -199,3 +199,5 @@ obj-y				+= resctrl/
@@ -469,7 +469,7 @@ index 53fbd2e0acdd..d36c1909e0e6 100644
 +
 +obj-$(CONFIG_X86_PS5)		+= ps5/
 diff --git a/drivers/ata/Kconfig b/drivers/ata/Kconfig
-index 2349bca136e0..3efbb88fdc32 100644
+index 2349bca13..3efbb88fd 100644
 --- a/drivers/ata/Kconfig
 +++ b/drivers/ata/Kconfig
 @@ -299,6 +299,18 @@ config AHCI_QORIQ
@@ -492,7 +492,7 @@ index 2349bca136e0..3efbb88fdc32 100644
  	tristate "Freescale 3.0Gbps SATA support"
  	depends on FSL_SOC || COMPILE_TEST
 diff --git a/drivers/ata/Makefile b/drivers/ata/Makefile
-index 20e6645ab737..bc98a92325b7 100644
+index 20e6645ab..bc98a9232 100644
 --- a/drivers/ata/Makefile
 +++ b/drivers/ata/Makefile
 @@ -27,6 +27,8 @@ obj-$(CONFIG_AHCI_ST)		+= ahci_st.o libahci.o libahci_platform.o
@@ -506,7 +506,7 @@ index 20e6645ab737..bc98a92325b7 100644
  obj-$(CONFIG_PDC_ADMA)		+= pdc_adma.o
 diff --git a/drivers/ata/ahci_salina.c b/drivers/ata/ahci_salina.c
 new file mode 100644
-index 000000000000..c020194eb44a
+index 000000000..c020194eb
 --- /dev/null
 +++ b/drivers/ata/ahci_salina.c
 @@ -0,0 +1,340 @@
@@ -852,7 +852,7 @@ index 000000000000..c020194eb44a
 +MODULE_SOFTDEP("pre: libahci spcie");
 diff --git a/drivers/ata/ahci_salina_phy.c b/drivers/ata/ahci_salina_phy.c
 new file mode 100644
-index 000000000000..c5e85ae102ea
+index 000000000..c5e85ae10
 --- /dev/null
 +++ b/drivers/ata/ahci_salina_phy.c
 @@ -0,0 +1,183 @@
@@ -1041,7 +1041,7 @@ index 000000000000..c5e85ae102ea
 +}
 diff --git a/drivers/ata/ahci_salina_phy.h b/drivers/ata/ahci_salina_phy.h
 new file mode 100644
-index 000000000000..39cc76f39e06
+index 000000000..39cc76f39
 --- /dev/null
 +++ b/drivers/ata/ahci_salina_phy.h
 @@ -0,0 +1,45 @@
@@ -1091,7 +1091,7 @@ index 000000000000..39cc76f39e06
 +
 +#endif
 diff --git a/drivers/firmware/dmi-id.c b/drivers/firmware/dmi-id.c
-index 477a37e2ef80..e1af70946c89 100644
+index 477a37e2e..e1af70946 100644
 --- a/drivers/firmware/dmi-id.c
 +++ b/drivers/firmware/dmi-id.c
 @@ -228,8 +228,16 @@ static int __init dmi_id_init(void)
@@ -1112,7 +1112,7 @@ index 477a37e2ef80..e1af70946c89 100644
  	dmi_id_init_attr_table();
  
 diff --git a/drivers/firmware/dmi_scan.c b/drivers/firmware/dmi_scan.c
-index 70d39adf50dc..5d283649817e 100644
+index 70d39adf5..5d2836498 100644
 --- a/drivers/firmware/dmi_scan.c
 +++ b/drivers/firmware/dmi_scan.c
 @@ -953,6 +953,14 @@ const char *dmi_get_system_info(int field)
@@ -1131,7 +1131,7 @@ index 70d39adf50dc..5d283649817e 100644
   * dmi_name_in_serial - Check if string is in the DMI product serial information
   * @str: string to check for
 diff --git a/drivers/gpu/drm/amd/amdgpu/amdgpu.h b/drivers/gpu/drm/amd/amdgpu/amdgpu.h
-index 447e734c362b..c52c81e084a7 100644
+index 447e734c3..c52c81e08 100644
 --- a/drivers/gpu/drm/amd/amdgpu/amdgpu.h
 +++ b/drivers/gpu/drm/amd/amdgpu/amdgpu.h
 @@ -271,6 +271,10 @@ extern int amdgpu_user_queue;
@@ -1146,7 +1146,7 @@ index 447e734c362b..c52c81e084a7 100644
  #define AMDGPU_SG_THRESHOLD			(256*1024*1024)
  #define AMDGPU_WAIT_IDLE_TIMEOUT_IN_MS	        3000
 diff --git a/drivers/gpu/drm/amd/amdgpu/amdgpu_bios.c b/drivers/gpu/drm/amd/amdgpu/amdgpu_bios.c
-index 35d04e69aec0..314ceaaaab9f 100644
+index 35d04e69a..314ceaaaa 100644
 --- a/drivers/gpu/drm/amd/amdgpu/amdgpu_bios.c
 +++ b/drivers/gpu/drm/amd/amdgpu/amdgpu_bios.c
 @@ -221,8 +221,14 @@ static bool amdgpu_read_bios_from_rom(struct amdgpu_device *adev)
@@ -1181,7 +1181,7 @@ index 35d04e69aec0..314ceaaaab9f 100644
  	if (amdgpu_read_platform_bios(adev)) {
  		dev_info(adev->dev, "Fetched VBIOS from platform\n");
 diff --git a/drivers/gpu/drm/amd/amdgpu/amdgpu_device.c b/drivers/gpu/drm/amd/amdgpu/amdgpu_device.c
-index 2ec69fa05cb1..502b878373e0 100644
+index 2ec69fa05..502b87837 100644
 --- a/drivers/gpu/drm/amd/amdgpu/amdgpu_device.c
 +++ b/drivers/gpu/drm/amd/amdgpu/amdgpu_device.c
 @@ -2512,6 +2512,26 @@ static int amdgpu_device_parse_gpu_info_fw(struct amdgpu_device *adev)
@@ -1212,7 +1212,7 @@ index 2ec69fa05cb1..502b878373e0 100644
  		break;
  	}
 diff --git a/drivers/gpu/drm/amd/amdgpu/amdgpu_discovery.c b/drivers/gpu/drm/amd/amdgpu/amdgpu_discovery.c
-index 3459d356151e..f09233c05e04 100644
+index 3459d3561..f09233c05 100644
 --- a/drivers/gpu/drm/amd/amdgpu/amdgpu_discovery.c
 +++ b/drivers/gpu/drm/amd/amdgpu/amdgpu_discovery.c
 @@ -2914,6 +2914,9 @@ int amdgpu_discovery_set_ip_blocks(struct amdgpu_device *adev)
@@ -1226,7 +1226,7 @@ index 3459d356151e..f09233c05e04 100644
  		break;
  	default:
 diff --git a/drivers/gpu/drm/amd/amdgpu/amdgpu_drv.c b/drivers/gpu/drm/amd/amdgpu/amdgpu_drv.c
-index c91638e65174..00618809031f 100644
+index c91638e65..006188090 100644
 --- a/drivers/gpu/drm/amd/amdgpu/amdgpu_drv.c
 +++ b/drivers/gpu/drm/amd/amdgpu/amdgpu_drv.c
 @@ -41,6 +41,10 @@
@@ -1274,7 +1274,7 @@ index c91638e65174..00618809031f 100644
  	    (pdev->class >> 8) == PCI_CLASS_DISPLAY_OTHER) {
  		if (drm_firmware_drivers_only() && amdgpu_modeset == -1)
 diff --git a/drivers/gpu/drm/amd/amdgpu/amdgpu_gfx.c b/drivers/gpu/drm/amd/amdgpu/amdgpu_gfx.c
-index 77578ecc6782..b037a6f57a6d 100644
+index 77578ecc6..b037a6f57 100644
 --- a/drivers/gpu/drm/amd/amdgpu/amdgpu_gfx.c
 +++ b/drivers/gpu/drm/amd/amdgpu/amdgpu_gfx.c
 @@ -2344,6 +2344,11 @@ void amdgpu_gfx_profile_ring_begin_use(struct amdgpu_ring *ring)
@@ -1302,7 +1302,7 @@ index 77578ecc6782..b037a6f57a6d 100644
  		return;
  
 diff --git a/drivers/gpu/drm/amd/amdgpu/amdgpu_sdma.c b/drivers/gpu/drm/amd/amdgpu/amdgpu_sdma.c
-index 321310ba2c08..764da52902ac 100644
+index 321310ba2..764da5290 100644
 --- a/drivers/gpu/drm/amd/amdgpu/amdgpu_sdma.c
 +++ b/drivers/gpu/drm/amd/amdgpu/amdgpu_sdma.c
 @@ -210,6 +210,9 @@ int amdgpu_sdma_init_microcode(struct amdgpu_device *adev,
@@ -1328,7 +1328,7 @@ index 321310ba2c08..764da52902ac 100644
  	header = (const struct common_firmware_header *)
  		adev->sdma.instance[instance].fw->data;
 diff --git a/drivers/gpu/drm/amd/amdgpu/gfx_v10_0.c b/drivers/gpu/drm/amd/amdgpu/gfx_v10_0.c
-index 8b60299b73ef..7ecf928cae8e 100644
+index 8b60299b7..7ecf928ca 100644
 --- a/drivers/gpu/drm/amd/amdgpu/gfx_v10_0.c
 +++ b/drivers/gpu/drm/amd/amdgpu/gfx_v10_0.c
 @@ -4202,6 +4202,14 @@ static void gfx_v10_0_check_gfxoff_flag(struct amdgpu_device *adev)
@@ -1473,7 +1473,7 @@ index 8b60299b73ef..7ecf928cae8e 100644
  		for (j = 0; j < adev->gfx.config.max_sh_per_se; j++) {
  			bitmap = i * adev->gfx.config.max_sh_per_se + j;
 diff --git a/drivers/gpu/drm/amd/amdgpu/nv.c b/drivers/gpu/drm/amd/amdgpu/nv.c
-index f17c3839aea1..a561038f3f79 100644
+index f17c3839a..a561038f3 100644
 --- a/drivers/gpu/drm/amd/amdgpu/nv.c
 +++ b/drivers/gpu/drm/amd/amdgpu/nv.c
 @@ -868,6 +868,10 @@ static int nv_common_early_init(struct amdgpu_ip_block *ip_block)
@@ -1488,7 +1488,7 @@ index f17c3839aea1..a561038f3f79 100644
  	case IP_VERSION(10, 3, 6):
  		adev->cg_flags = AMD_CG_SUPPORT_GFX_MGCG |
 diff --git a/drivers/gpu/drm/amd/amdgpu/sdma_v5_0.c b/drivers/gpu/drm/amd/amdgpu/sdma_v5_0.c
-index e3a035c9fece..6eb67dd7b52c 100644
+index e3a035c9f..6eb67dd7b 100644
 --- a/drivers/gpu/drm/amd/amdgpu/sdma_v5_0.c
 +++ b/drivers/gpu/drm/amd/amdgpu/sdma_v5_0.c
 @@ -1362,6 +1362,12 @@ static int sdma_v5_0_early_init(struct amdgpu_ip_block *ip_block)
@@ -1505,7 +1505,7 @@ index e3a035c9fece..6eb67dd7b52c 100644
  	if (r)
  		return r;
 diff --git a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c
-index 0aee65503642..3ae712111a93 100644
+index 0aee65503..3ae712111 100644
 --- a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c
 +++ b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c
 @@ -80,6 +80,10 @@
@@ -1626,7 +1626,7 @@ index 0aee65503642..3ae712111a93 100644
  
  	/* Handle connector state changes */
 diff --git a/drivers/gpu/drm/amd/display/dc/core/dc_resource.c b/drivers/gpu/drm/amd/display/dc/core/dc_resource.c
-index 896f4719cf7b..0eb818421a50 100644
+index 896f4719c..0eb818421 100644
 --- a/drivers/gpu/drm/amd/display/dc/core/dc_resource.c
 +++ b/drivers/gpu/drm/amd/display/dc/core/dc_resource.c
 @@ -204,6 +204,7 @@ enum dce_version resource_parse_asic_id(struct hw_asic_id asic_id)
@@ -1638,7 +1638,7 @@ index 896f4719cf7b..0eb818421a50 100644
  			dc_version = DCN_VERSION_2_01;
  			break;
 diff --git a/drivers/gpu/drm/amd/display/dc/dcn201/dcn201_link_encoder.c b/drivers/gpu/drm/amd/display/dc/dcn201/dcn201_link_encoder.c
-index 9459e8f28338..063e4a4eefdd 100644
+index 9459e8f28..063e4a4ee 100644
 --- a/drivers/gpu/drm/amd/display/dc/dcn201/dcn201_link_encoder.c
 +++ b/drivers/gpu/drm/amd/display/dc/dcn201/dcn201_link_encoder.c
 @@ -98,8 +98,11 @@ static const struct link_encoder_funcs dcn201_link_enc_funcs = {
@@ -1654,7 +1654,7 @@ index 9459e8f28338..063e4a4eefdd 100644
  	.fec_is_active = enc2_fec_is_active,
  	.is_in_alt_mode = dcn201_link_encoder_is_in_alt_mode,
 diff --git a/drivers/gpu/drm/amd/display/dc/dio/dcn10/dcn10_link_encoder.c b/drivers/gpu/drm/amd/display/dc/dio/dcn10/dcn10_link_encoder.c
-index 13e14aad3daa..edc4b9ccfea4 100644
+index 13e14aad3..edc4b9ccf 100644
 --- a/drivers/gpu/drm/amd/display/dc/dio/dcn10/dcn10_link_encoder.c
 +++ b/drivers/gpu/drm/amd/display/dc/dio/dcn10/dcn10_link_encoder.c
 @@ -986,6 +986,11 @@ void dcn10_link_encoder_enable_dp_output(
@@ -1682,7 +1682,7 @@ index 13e14aad3daa..edc4b9ccfea4 100644
  		/* OF_SKIP_POWER_DOWN_INACTIVE_ENCODER */
  	/*in DP_Alt_No_Connect case, we turn off the dig already,
 diff --git a/drivers/gpu/drm/amd/display/dc/hwss/dce110/dce110_hwseq.c b/drivers/gpu/drm/amd/display/dc/hwss/dce110/dce110_hwseq.c
-index 699a756bbc40..4a9d4ba6abf4 100644
+index 699a756bb..4a9d4ba6a 100644
 --- a/drivers/gpu/drm/amd/display/dc/hwss/dce110/dce110_hwseq.c
 +++ b/drivers/gpu/drm/amd/display/dc/hwss/dce110/dce110_hwseq.c
 @@ -1753,6 +1753,11 @@ static void power_down_clock_sources(struct dc *dc)
@@ -1698,7 +1698,7 @@ index 699a756bbc40..4a9d4ba6abf4 100644
  		dc->res_pool->dp_clock_source) == false)
  		dm_error("Failed to power down pll! (dp clk src)\n");
 diff --git a/drivers/gpu/drm/amd/display/dc/link/protocols/link_dp_capability.c b/drivers/gpu/drm/amd/display/dc/link/protocols/link_dp_capability.c
-index cdc7587cf0b6..7a7b17fe5a89 100644
+index cdc7587cf..7a7b17fe5 100644
 --- a/drivers/gpu/drm/amd/display/dc/link/protocols/link_dp_capability.c
 +++ b/drivers/gpu/drm/amd/display/dc/link/protocols/link_dp_capability.c
 @@ -1015,6 +1015,12 @@ bool link_decide_link_settings(struct dc_stream_state *stream,
@@ -1732,7 +1732,7 @@ index cdc7587cf0b6..7a7b17fe5a89 100644
  							WPP_BIT_FLAG_DC_DETECTION_DP_CAPS,
  							"result=%u link_index=%u enum dce_version=%d DPCD=0x%04X min_hblank=%u branch_dev_id=0x%x branch_dev_name='%c%c%c%c%c%c'",
 diff --git a/drivers/gpu/drm/amd/display/include/dal_asic_id.h b/drivers/gpu/drm/amd/display/include/dal_asic_id.h
-index 8aea50aa9533..8b647bd95691 100644
+index 8aea50aa9..8b647bd95 100644
 --- a/drivers/gpu/drm/amd/display/include/dal_asic_id.h
 +++ b/drivers/gpu/drm/amd/display/include/dal_asic_id.h
 @@ -217,6 +217,7 @@ enum {
@@ -1744,7 +1744,7 @@ index 8aea50aa9533..8b647bd95691 100644
  #define FAMILY_VGH 144
  #define DEVICE_ID_VGH_163F 0x163F
 diff --git a/drivers/gpu/drm/drm_edid.c b/drivers/gpu/drm/drm_edid.c
-index ff432ac6b569..2efeaec03ea1 100644
+index ff432ac6b..2efeaec03 100644
 --- a/drivers/gpu/drm/drm_edid.c
 +++ b/drivers/gpu/drm/drm_edid.c
 @@ -2219,6 +2219,10 @@ static void connector_bad_edid(struct drm_connector *connector,
@@ -1771,7 +1771,7 @@ index ff432ac6b569..2efeaec03ea1 100644
  }
  
 diff --git a/drivers/hwmon/k10temp.c b/drivers/hwmon/k10temp.c
-index a5d8f45b7881..3c7b76af13e4 100644
+index a5d8f45b7..3c7b76af1 100644
 --- a/drivers/hwmon/k10temp.c
 +++ b/drivers/hwmon/k10temp.c
 @@ -476,6 +476,7 @@ static int k10temp_probe(struct pci_dev *pdev, const struct pci_device_id *id)
@@ -1783,7 +1783,7 @@ index a5d8f45b7881..3c7b76af13e4 100644
  		case 0x68:	/* Lucienne */
  		case 0x71:	/* Zen2 */
 diff --git a/drivers/iommu/amd/init.c b/drivers/iommu/amd/init.c
-index f3fd7f39efb4..7dd1b138ae78 100644
+index f3fd7f39e..7dd1b138a 100644
 --- a/drivers/iommu/amd/init.c
 +++ b/drivers/iommu/amd/init.c
 @@ -3093,6 +3093,8 @@ static void __init free_iommu_resources(void)
@@ -1817,7 +1817,7 @@ index f3fd7f39efb4..7dd1b138ae78 100644
  	if (amd_iommu_irq_remap) {
  		struct amd_iommu_pci_seg *pci_seg;
 diff --git a/drivers/net/phy/Kconfig b/drivers/net/phy/Kconfig
-index 7b73332a13d9..b92217f5ef0e 100644
+index 7b73332a1..b92217f5e 100644
 --- a/drivers/net/phy/Kconfig
 +++ b/drivers/net/phy/Kconfig
 @@ -471,3 +471,4 @@ config XILINX_GMII2RGMII
@@ -1826,7 +1826,7 @@ index 7b73332a13d9..b92217f5ef0e 100644
  endif # PHYLIB
 +source "drivers/net/phy/mts/Kconfig"
 diff --git a/drivers/net/phy/Makefile b/drivers/net/phy/Makefile
-index 3a34917adea7..2f0ec5e17d90 100644
+index 3a34917ad..2f0ec5e17 100644
 --- a/drivers/net/phy/Makefile
 +++ b/drivers/net/phy/Makefile
 @@ -71,6 +71,7 @@ obj-$(CONFIG_MARVELL_88X2222_PHY)	+= marvell-88x2222.o
@@ -1839,7 +1839,7 @@ index 3a34917adea7..2f0ec5e17d90 100644
  obj-$(CONFIG_MICROCHIP_PHY)	+= microchip.o
 diff --git a/drivers/net/phy/mts/Kconfig b/drivers/net/phy/mts/Kconfig
 new file mode 100644
-index 000000000000..94cb839814cb
+index 000000000..94cb83981
 --- /dev/null
 +++ b/drivers/net/phy/mts/Kconfig
 @@ -0,0 +1,10 @@
@@ -1855,7 +1855,7 @@ index 000000000000..94cb839814cb
 +	  will be called mts.
 diff --git a/drivers/net/phy/mts/Makefile b/drivers/net/phy/mts/Makefile
 new file mode 100644
-index 000000000000..e01771be845b
+index 000000000..e01771be8
 --- /dev/null
 +++ b/drivers/net/phy/mts/Makefile
 @@ -0,0 +1,3 @@
@@ -1864,7 +1864,7 @@ index 000000000000..e01771be845b
 +mts-y := mts_main.o mts_phy.o
 diff --git a/drivers/net/phy/mts/mts.h b/drivers/net/phy/mts/mts.h
 new file mode 100644
-index 000000000000..e846b6b0edbc
+index 000000000..a0e41029a
 --- /dev/null
 +++ b/drivers/net/phy/mts/mts.h
 @@ -0,0 +1,186 @@
@@ -2056,7 +2056,7 @@ index 000000000000..e846b6b0edbc
 +#endif /* _MTS_H */
 diff --git a/drivers/net/phy/mts/mts_main.c b/drivers/net/phy/mts/mts_main.c
 new file mode 100644
-index 000000000000..4250a25d7260
+index 000000000..c193cb2d1
 --- /dev/null
 +++ b/drivers/net/phy/mts/mts_main.c
 @@ -0,0 +1,823 @@
@@ -2885,7 +2885,7 @@ index 000000000000..4250a25d7260
 +MODULE_DESCRIPTION("PlayStation 5 Gigabit Ethernet driver");
 diff --git a/drivers/net/phy/mts/mts_phy.c b/drivers/net/phy/mts/mts_phy.c
 new file mode 100644
-index 000000000000..91fedcca4589
+index 000000000..91fedcca4
 --- /dev/null
 +++ b/drivers/net/phy/mts/mts_phy.c
 @@ -0,0 +1,404 @@
@@ -3294,7 +3294,7 @@ index 000000000000..91fedcca4589
 +	return 0;
 +}
 diff --git a/drivers/pci/probe.c b/drivers/pci/probe.c
-index b4707640e102..7b854e5bb8ff 100644
+index b4707640e..7b854e5bb 100644
 --- a/drivers/pci/probe.c
 +++ b/drivers/pci/probe.c
 @@ -2801,6 +2801,14 @@ static int next_ari_fn(struct pci_bus *bus, struct pci_dev *dev, int fn)
@@ -3314,14 +3314,14 @@ index b4707640e102..7b854e5bb8ff 100644
  
 diff --git a/drivers/ps5/Makefile b/drivers/ps5/Makefile
 new file mode 100644
-index 000000000000..ff1bbbbf219c
+index 000000000..08f524452
 --- /dev/null
 +++ b/drivers/ps5/Makefile
 @@ -0,0 +1 @@
-+obj-y += spcie.o tpcie.o hdmi.o mp1.o buzzer.o
++obj-y += spcie.o tpcie.o hdmi.o mp1.o power.o buzzer.o
 diff --git a/drivers/ps5/autoservo_param.h b/drivers/ps5/autoservo_param.h
 new file mode 100644
-index 000000000000..d2c25e461bf7
+index 000000000..d2c25e461
 --- /dev/null
 +++ b/drivers/ps5/autoservo_param.h
 @@ -0,0 +1,1902 @@
@@ -5229,7 +5229,7 @@ index 000000000000..d2c25e461bf7
 +#endif /* _AUTOSERVO_PARAM_H */
 diff --git a/drivers/ps5/buzzer.c b/drivers/ps5/buzzer.c
 new file mode 100644
-index 000000000000..f48ad6f92534
+index 000000000..f48ad6f92
 --- /dev/null
 +++ b/drivers/ps5/buzzer.c
 @@ -0,0 +1,291 @@
@@ -5526,7 +5526,7 @@ index 000000000000..f48ad6f92534
 +MODULE_LICENSE("GPL");
 diff --git a/drivers/ps5/hdmi.c b/drivers/ps5/hdmi.c
 new file mode 100644
-index 000000000000..8f094490d677
+index 000000000..8f094490d
 --- /dev/null
 +++ b/drivers/ps5/hdmi.c
 @@ -0,0 +1,1237 @@
@@ -6769,15 +6769,16 @@ index 000000000000..8f094490d677
 +EXPORT_SYMBOL(hdmi_notification_handler);
 diff --git a/drivers/ps5/mp1.c b/drivers/ps5/mp1.c
 new file mode 100644
-index 000000000000..4af890c842a7
+index 000000000..df9205bb2
 --- /dev/null
 +++ b/drivers/ps5/mp1.c
-@@ -0,0 +1,488 @@
+@@ -0,0 +1,547 @@
 +#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 +
 +#include <linux/module.h>
 +#include <linux/miscdevice.h>
 +#include <linux/delay.h>
++#include <linux/mutex.h>
 +#include <linux/smp.h>
 +#include <linux/ps5.h>
 +#include <asm/amd/node.h>
@@ -6834,6 +6835,8 @@ index 000000000000..4af890c842a7
 +	u64 gfx_cacw_len;
 +	u32 bapm_param[176][2];
 +};
++
++static DEFINE_MUTEX(mp1_mbox_mutex);
 +
 +static const struct bapm_param_set bapm_param_set_1 = {
 +	.dpm_wac = {
@@ -7011,7 +7014,7 @@ index 000000000000..4af890c842a7
 +        return 0;
 +}
 +
-+static int mp1fw_sendmsg(struct mp1_msg *msg, u8 msgid)
++static int __mp1fw_sendmsg(struct mp1_msg *msg, u8 msgid)
 +{
 +	if (mp1fw_waitmsg(MP1_C2PMSG_90, msgid)) {
 +		pr_err("[MP1ERROR] : %s: Error : busy msgid=0x%X, arg=0x%08X\n", __func__, msgid, msg->arg);
@@ -7042,7 +7045,18 @@ index 000000000000..4af890c842a7
 +	return 0;
 +}
 +
-+static int mp1fw_test_sendmsg(struct mp1_msg *msg, uint8_t msgid)
++static int mp1fw_sendmsg(struct mp1_msg *msg, u8 msgid)
++{
++	int ret;
++
++	mutex_lock(&mp1_mbox_mutex);
++	ret = __mp1fw_sendmsg(msg, msgid);
++	mutex_unlock(&mp1_mbox_mutex);
++
++	return ret;
++}
++
++static int __mp1fw_test_sendmsg(struct mp1_msg *msg, uint8_t msgid)
 +{
 +	if (mp1fw_waitmsg(MP1_C2PMSG_96, msgid)) {
 +		printk("[MP1ERROR] : %s: Error : busy msgid=0x%X, arg=0x%08X\n", __func__, msgid, msg->arg);
@@ -7067,6 +7081,46 @@ index 000000000000..4af890c842a7
 +
 +	return 0;
 +}
++
++static int mp1fw_test_sendmsg(struct mp1_msg *msg, uint8_t msgid)
++{
++	int ret;
++
++	mutex_lock(&mp1_mbox_mutex);
++	ret = __mp1fw_test_sendmsg(msg, msgid);
++	mutex_unlock(&mp1_mbox_mutex);
++
++	return ret;
++}
++
++int ps5_mp1_mailbox_xfer(enum ps5_mp1_queue queue, u8 msgid, u32 arg,
++			  u32 *resp_val)
++{
++	struct mp1_msg msg = {
++		.arg = arg,
++	};
++	int ret;
++
++	switch (queue) {
++	case PS5_MP1_QUEUE0:
++		ret = mp1fw_sendmsg(&msg, msgid);
++		break;
++	case PS5_MP1_QUEUE_TEST:
++		ret = mp1fw_test_sendmsg(&msg, msgid);
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	if (ret)
++		return ret;
++
++	if (resp_val)
++		*resp_val = msg.resp_val;
++
++	return 0;
++}
++EXPORT_SYMBOL_GPL(ps5_mp1_mailbox_xfer);
 +
 +static int mp1_set_wc_cpu(int mode)
 +{
@@ -7116,14 +7170,19 @@ index 000000000000..4af890c842a7
 +static int mp1_universal_mode_enter(u32 *params)
 +{
 +	struct mp1_msg msg = {};
++	int ret;
 +
++	mutex_lock(&mp1_mbox_mutex);
 +	pcirc_smn_write(MP1_C2PMSG_56, params[1]);
 +	pcirc_smn_write(MP1_C2PMSG_57, params[2]);
 +	pcirc_smn_write(MP1_C2PMSG_58, params[3]);
 +	pcirc_smn_write(MP1_C2PMSG_59, params[4]);
 +
 +	msg.arg = params[0];
-+	return mp1fw_sendmsg(&msg, PPSMC_MSG_UniversalModeEntry);
++	ret = __mp1fw_sendmsg(&msg, PPSMC_MSG_UniversalModeEntry);
++	mutex_unlock(&mp1_mbox_mutex);
++
++	return ret;
 +}
 +
 +static int mp1_universal_mode_exit(void)
@@ -7261,9 +7320,436 @@ index 000000000000..4af890c842a7
 +MODULE_AUTHOR("Andy Nguyen");
 +MODULE_DESCRIPTION("PlayStation 5 MP1 SMU driver");
 +MODULE_LICENSE("GPL");
+diff --git a/drivers/ps5/power.c b/drivers/ps5/power.c
+new file mode 100644
+index 000000000..0608f570c
+--- /dev/null
++++ b/drivers/ps5/power.c
+@@ -0,0 +1,421 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * PlayStation 5 APU power controls.
++ *
++ * CPU P-states are exposed through cpufreq. PS5-specific GPU GFXCLK, data
++ * fabric P-state, and voltage telemetry are exposed as device attributes.
++ */
++
++#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
++
++#include <linux/cpufreq.h>
++#include <linux/device.h>
++#include <linux/delay.h>
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/platform_device.h>
++#include <linux/ps5.h>
++#include <linux/slab.h>
++
++#define PS5_CPU_MASK_ALL		0xff
++#define PS5_CPU_DEFAULT_PSTATE		0
++#define PS5_GPU_DEFAULT_MHZ		2000
++#define PS5_GPU_MIN_MHZ			400
++#define PS5_GPU_MAX_MHZ			2380
++#define PS5_DF_DEFAULT_PSTATE		3
++#define PS5_DF_SAFE_MIN_PSTATE		2
++#define PS5_DF_MAX_PSTATE		3
++#define PS5_VERIFY_TRIES		2000
++#define PS5_VERIFY_SLEEP_US		1500
++
++#define PPSMC_MSG_REQUEST_CORE_PSTATE	0x0b
++#define PPSMC_MSG_QUERY_CORE_PSTATE	0x0c
++#define PPSMC_MSG_REQUEST_GFXCLK	0x0e
++#define PPSMC_MSG_QUERY_GFXCLK		0x0f
++#define PPSMC_MSG_REQUEST_DF_PSTATE	0x12
++#define PPSMC_MSG_QUERY_DF_PSTATE	0x13
++#define PPSMC_MSG_GET_CPU_VOLTAGE	0x36
++#define PPSMC_MSG_GET_GPU_VOLTAGE	0x37
++
++struct ps5_cpu_pstate {
++	unsigned int pstate;
++	unsigned int khz;
++};
++
++static const struct ps5_cpu_pstate ps5_cpu_pstates[] = {
++	{ 0, 3200000 },
++	{ 1, 2560000 },
++	{ 2, 2327000 },
++	{ 3, 1969000 },
++	{ 4, 1829000 },
++	{ 5, 1600000 },
++	{ 6, 1280000 },
++	{ 7,  800000 },
++};
++
++static struct cpufreq_frequency_table ps5_cpufreq_table[] = {
++	{ .driver_data = 0, .frequency = 3200000 },
++	{ .driver_data = 1, .frequency = 2560000 },
++	{ .driver_data = 2, .frequency = 2327000 },
++	{ .driver_data = 3, .frequency = 1969000 },
++	{ .driver_data = 4, .frequency = 1829000 },
++	{ .driver_data = 5, .frequency = 1600000 },
++	{ .driver_data = 6, .frequency = 1280000 },
++	{ .driver_data = 7, .frequency =  800000 },
++	{ .frequency = CPUFREQ_TABLE_END },
++};
++
++static bool allow_unsafe_df;
++module_param(allow_unsafe_df, bool, 0644);
++MODULE_PARM_DESC(allow_unsafe_df, "allow df0/df1 writes despite known mailbox hang risk");
++
++static struct platform_device *ps5_power_pdev;
++
++static int ps5_mp1_xfer(enum ps5_mp1_queue queue, u8 msg, u32 arg, u32 *val)
++{
++	return ps5_mp1_mailbox_xfer(queue, msg, arg, val);
++}
++
++static int ps5_cpu_set_pstate(u32 mask, u32 pstate)
++{
++	u32 arg = (mask & 0xff) | ((pstate & 0x0f) << 16);
++
++	return ps5_mp1_xfer(PS5_MP1_QUEUE0, PPSMC_MSG_REQUEST_CORE_PSTATE,
++			    arg, NULL);
++}
++
++static int ps5_cpu_get_pstate(u32 cpu, u32 *pstate)
++{
++	return ps5_mp1_xfer(PS5_MP1_QUEUE0, PPSMC_MSG_QUERY_CORE_PSTATE,
++			    cpu & 0xff, pstate);
++}
++
++static unsigned int ps5_cpu_pstate_to_khz(u32 pstate)
++{
++	int i;
++
++	for (i = 0; i < ARRAY_SIZE(ps5_cpu_pstates); i++) {
++		if (ps5_cpu_pstates[i].pstate == pstate)
++			return ps5_cpu_pstates[i].khz;
++	}
++
++	return 0;
++}
++
++static int ps5_gpu_get_gfxclk(u32 *mhz)
++{
++	return ps5_mp1_xfer(PS5_MP1_QUEUE0, PPSMC_MSG_QUERY_GFXCLK, 0, mhz);
++}
++
++static int ps5_gpu_set_gfxclk(u32 mhz)
++{
++	return ps5_mp1_xfer(PS5_MP1_QUEUE0, PPSMC_MSG_REQUEST_GFXCLK, mhz,
++			    NULL);
++}
++
++static int ps5_df_get_pstate(u32 *pstate)
++{
++	return ps5_mp1_xfer(PS5_MP1_QUEUE0, PPSMC_MSG_QUERY_DF_PSTATE, 0,
++			    pstate);
++}
++
++static int ps5_df_set_pstate(u32 pstate)
++{
++	return ps5_mp1_xfer(PS5_MP1_QUEUE0, PPSMC_MSG_REQUEST_DF_PSTATE,
++			    pstate, NULL);
++}
++
++static int ps5_read_voltage(u8 msg, u32 *mv)
++{
++	return ps5_mp1_xfer(PS5_MP1_QUEUE_TEST, msg, 0, mv);
++}
++
++static int ps5_wait_u32(const char *name, int (*read)(u32 *), u32 target)
++{
++	u32 cur = 0;
++	int i, ret;
++
++	for (i = 0; i < PS5_VERIFY_TRIES; i++) {
++		ret = read(&cur);
++		if (ret)
++			return ret;
++		if (cur == target)
++			return 0;
++		usleep_range(PS5_VERIFY_SLEEP_US, PS5_VERIFY_SLEEP_US + 500);
++	}
++
++	pr_warn("%s verify timeout: target %u, last %u\n", name, target, cur);
++	return -ETIMEDOUT;
++}
++
++static int ps5_gpu_set_verified(u32 mhz)
++{
++	int ret;
++
++	ret = ps5_gpu_set_gfxclk(mhz);
++	if (ret)
++		return ret;
++
++	return ps5_wait_u32("gfxclk", ps5_gpu_get_gfxclk, mhz);
++}
++
++static int ps5_df_set_verified(u32 pstate)
++{
++	int ret;
++
++	ret = ps5_df_set_pstate(pstate);
++	if (ret)
++		return ret;
++
++	return ps5_wait_u32("df_pstate", ps5_df_get_pstate, pstate);
++}
++
++static int ps5_restore_defaults(void)
++{
++	int ret, first = 0;
++
++	ret = ps5_cpu_set_pstate(PS5_CPU_MASK_ALL, PS5_CPU_DEFAULT_PSTATE);
++	if (ret && !first)
++		first = ret;
++
++	ret = ps5_gpu_set_verified(PS5_GPU_DEFAULT_MHZ);
++	if (ret && !first)
++		first = ret;
++
++	ret = ps5_df_set_verified(PS5_DF_DEFAULT_PSTATE);
++	if (ret && !first)
++		first = ret;
++
++	return first;
++}
++
++static int ps5_cpufreq_init(struct cpufreq_policy *policy)
++{
++	cpumask_copy(policy->cpus, cpu_possible_mask);
++	policy->shared_type = CPUFREQ_SHARED_TYPE_ANY;
++	policy->freq_table = ps5_cpufreq_table;
++	policy->cpuinfo.transition_latency = CPUFREQ_DEFAULT_TRANSITION_LATENCY_NS;
++
++	cpufreq_generic_init(policy, ps5_cpufreq_table,
++			     CPUFREQ_DEFAULT_TRANSITION_LATENCY_NS);
++
++	return 0;
++}
++
++static int ps5_cpufreq_target_index(struct cpufreq_policy *policy,
++				    unsigned int index)
++{
++	if (index >= ARRAY_SIZE(ps5_cpufreq_table) - 1)
++		return -EINVAL;
++
++	return ps5_cpu_set_pstate(PS5_CPU_MASK_ALL,
++				  ps5_cpufreq_table[index].driver_data);
++}
++
++static unsigned int ps5_cpufreq_get(unsigned int cpu)
++{
++	u32 pstate;
++
++	if (ps5_cpu_get_pstate(cpu, &pstate))
++		return 0;
++
++	return ps5_cpu_pstate_to_khz(pstate);
++}
++
++static int ps5_cpufreq_suspend(struct cpufreq_policy *policy)
++{
++	return ps5_cpu_set_pstate(PS5_CPU_MASK_ALL, PS5_CPU_DEFAULT_PSTATE);
++}
++
++static struct cpufreq_driver ps5_cpufreq_driver = {
++	.verify		= cpufreq_generic_frequency_table_verify,
++	.target_index	= ps5_cpufreq_target_index,
++	.get		= ps5_cpufreq_get,
++	.init		= ps5_cpufreq_init,
++	.suspend	= ps5_cpufreq_suspend,
++	.name		= "ps5-cpufreq",
++};
++
++static ssize_t gpu_gfxclk_mhz_show(struct device *dev,
++				   struct device_attribute *attr, char *buf)
++{
++	u32 mhz;
++	int ret;
++
++	ret = ps5_gpu_get_gfxclk(&mhz);
++	if (ret)
++		return ret;
++
++	return sysfs_emit(buf, "%u\n", mhz);
++}
++
++static ssize_t gpu_gfxclk_mhz_store(struct device *dev,
++				    struct device_attribute *attr,
++				    const char *buf, size_t count)
++{
++	u32 mhz;
++	int ret;
++
++	ret = kstrtou32(buf, 0, &mhz);
++	if (ret)
++		return ret;
++
++	if (mhz < PS5_GPU_MIN_MHZ || mhz > PS5_GPU_MAX_MHZ)
++		return -ERANGE;
++
++	ret = ps5_gpu_set_verified(mhz);
++	if (ret)
++		return ret;
++
++	return count;
++}
++static DEVICE_ATTR_RW(gpu_gfxclk_mhz);
++
++static ssize_t df_pstate_show(struct device *dev,
++			      struct device_attribute *attr, char *buf)
++{
++	u32 pstate;
++	int ret;
++
++	ret = ps5_df_get_pstate(&pstate);
++	if (ret)
++		return ret;
++
++	return sysfs_emit(buf, "%u\n", pstate);
++}
++
++static ssize_t df_pstate_store(struct device *dev,
++			       struct device_attribute *attr,
++			       const char *buf, size_t count)
++{
++	u32 pstate;
++	int ret;
++
++	ret = kstrtou32(buf, 0, &pstate);
++	if (ret)
++		return ret;
++
++	if (pstate > PS5_DF_MAX_PSTATE)
++		return -ERANGE;
++	if (pstate < PS5_DF_SAFE_MIN_PSTATE && !allow_unsafe_df)
++		return -EPERM;
++
++	ret = ps5_df_set_verified(pstate);
++	if (ret)
++		return ret;
++
++	return count;
++}
++static DEVICE_ATTR_RW(df_pstate);
++
++static ssize_t cpu_voltage_millivolt_show(struct device *dev,
++					  struct device_attribute *attr,
++					  char *buf)
++{
++	u32 mv;
++	int ret;
++
++	ret = ps5_read_voltage(PPSMC_MSG_GET_CPU_VOLTAGE, &mv);
++	if (ret)
++		return ret;
++
++	return sysfs_emit(buf, "%u\n", mv);
++}
++static DEVICE_ATTR_RO(cpu_voltage_millivolt);
++
++static ssize_t gpu_voltage_millivolt_show(struct device *dev,
++					  struct device_attribute *attr,
++					  char *buf)
++{
++	u32 mv;
++	int ret;
++
++	ret = ps5_read_voltage(PPSMC_MSG_GET_GPU_VOLTAGE, &mv);
++	if (ret)
++		return ret;
++
++	return sysfs_emit(buf, "%u\n", mv);
++}
++static DEVICE_ATTR_RO(gpu_voltage_millivolt);
++
++static ssize_t restore_defaults_store(struct device *dev,
++				      struct device_attribute *attr,
++				      const char *buf, size_t count)
++{
++	bool restore;
++	int ret;
++
++	ret = kstrtobool(buf, &restore);
++	if (ret)
++		return ret;
++	if (!restore)
++		return -EINVAL;
++
++	ret = ps5_restore_defaults();
++	if (ret)
++		return ret;
++
++	return count;
++}
++static DEVICE_ATTR_WO(restore_defaults);
++
++static struct attribute *ps5_power_attrs[] = {
++	&dev_attr_gpu_gfxclk_mhz.attr,
++	&dev_attr_df_pstate.attr,
++	&dev_attr_cpu_voltage_millivolt.attr,
++	&dev_attr_gpu_voltage_millivolt.attr,
++	&dev_attr_restore_defaults.attr,
++	NULL,
++};
++
++static const struct attribute_group ps5_power_attr_group = {
++	.attrs = ps5_power_attrs,
++};
++
++static int __init ps5_power_init(void)
++{
++	int ret;
++
++	ret = cpufreq_register_driver(&ps5_cpufreq_driver);
++	if (ret)
++		return ret;
++
++	ps5_power_pdev = platform_device_register_simple("ps5-power", -1,
++							 NULL, 0);
++	if (IS_ERR(ps5_power_pdev)) {
++		ret = PTR_ERR(ps5_power_pdev);
++		goto err_unregister_cpufreq;
++	}
++
++	ret = sysfs_create_group(&ps5_power_pdev->dev.kobj,
++				 &ps5_power_attr_group);
++	if (ret)
++		goto err_unregister_device;
++
++	pr_info("registered PS5 power controls\n");
++	return 0;
++
++err_unregister_device:
++	platform_device_unregister(ps5_power_pdev);
++err_unregister_cpufreq:
++	cpufreq_unregister_driver(&ps5_cpufreq_driver);
++	return ret;
++}
++
++static void __exit ps5_power_exit(void)
++{
++	if (ps5_power_pdev) {
++		sysfs_remove_group(&ps5_power_pdev->dev.kobj,
++				   &ps5_power_attr_group);
++		platform_device_unregister(ps5_power_pdev);
++	}
++	ps5_restore_defaults();
++	cpufreq_unregister_driver(&ps5_cpufreq_driver);
++}
++
++module_init(ps5_power_init);
++module_exit(ps5_power_exit);
++
++MODULE_AUTHOR("PS5 Linux contributors");
++MODULE_DESCRIPTION("PlayStation 5 APU power control driver");
++MODULE_LICENSE("GPL");
 diff --git a/drivers/ps5/spcie.c b/drivers/ps5/spcie.c
 new file mode 100644
-index 000000000000..e02c074ee0b1
+index 000000000..e02c074ee
 --- /dev/null
 +++ b/drivers/ps5/spcie.c
 @@ -0,0 +1,1149 @@
@@ -8418,7 +8904,7 @@ index 000000000000..e02c074ee0b1
 +MODULE_LICENSE("GPL");
 diff --git a/drivers/ps5/tpcie.c b/drivers/ps5/tpcie.c
 new file mode 100644
-index 000000000000..23de43ea4b00
+index 000000000..23de43ea4
 --- /dev/null
 +++ b/drivers/ps5/tpcie.c
 @@ -0,0 +1,303 @@
@@ -8726,7 +9212,7 @@ index 000000000000..23de43ea4b00
 +MODULE_DESCRIPTION("PlayStation 5 Titania PCI Express glue driver");
 +MODULE_LICENSE("GPL");
 diff --git a/include/linux/dmi.h b/include/linux/dmi.h
-index 2eedf44e6801..2785a47665be 100644
+index 2eedf44e6..2785a4766 100644
 --- a/include/linux/dmi.h
 +++ b/include/linux/dmi.h
 @@ -105,6 +105,9 @@ extern struct kobject *dmi_kobj;
@@ -8741,10 +9227,10 @@ index 2eedf44e6801..2785a47665be 100644
  extern void dmi_setup(void);
 diff --git a/include/linux/ps5.h b/include/linux/ps5.h
 new file mode 100644
-index 000000000000..4020a0b0c61c
+index 000000000..55fe4c544
 --- /dev/null
 +++ b/include/linux/ps5.h
-@@ -0,0 +1,93 @@
+@@ -0,0 +1,101 @@
 +#ifndef _LINUX_PS5_H
 +#define _LINUX_PS5_H
 +
@@ -8837,9 +9323,17 @@ index 000000000000..4020a0b0c61c
 +void mp1_set_pm1_addr(u64 addr);
 +int mp1_set_sleep_entry(void);
 +
++enum ps5_mp1_queue {
++	PS5_MP1_QUEUE0,
++	PS5_MP1_QUEUE_TEST,
++};
++
++int ps5_mp1_mailbox_xfer(enum ps5_mp1_queue queue, u8 msgid, u32 arg,
++			  u32 *resp_val);
++
 +#endif /* _LINUX_PS5_H */
 diff --git a/scripts/setlocalversion b/scripts/setlocalversion
-index 28169d7e143b..44f516daa21d 100755
+index 28169d7e1..44f516daa 100755
 --- a/scripts/setlocalversion
 +++ b/scripts/setlocalversion
 @@ -61,6 +61,9 @@ scm_version()
@@ -8853,7 +9347,7 @@ index 28169d7e143b..44f516daa21d 100755
  	do
  		case "$1" in
 diff --git a/sound/hda/controllers/intel.c b/sound/hda/controllers/intel.c
-index a4104376523a..befee7ef6c94 100644
+index a41043765..befee7ef6 100644
 --- a/sound/hda/controllers/intel.c
 +++ b/sound/hda/controllers/intel.c
 @@ -2640,6 +2640,8 @@ static const struct pci_device_id azx_ids[] = {
