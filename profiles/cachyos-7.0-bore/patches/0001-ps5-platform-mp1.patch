@@ -1,22 +1,21 @@
 diff --git a/drivers/ps5/Makefile b/drivers/ps5/Makefile
 new file mode 100644
-index 000000000..08f524452
+index 000000000000..ff1bbbbf219c
 --- /dev/null
 +++ b/drivers/ps5/Makefile
 @@ -0,0 +1 @@
 +obj-y += spcie.o tpcie.o hdmi.o mp1.o buzzer.o
 diff --git a/drivers/ps5/mp1.c b/drivers/ps5/mp1.c
 new file mode 100644
-index 000000000..df9205bb2
+index 000000000000..4af890c842a7
 --- /dev/null
 +++ b/drivers/ps5/mp1.c
-@@ -0,0 +1,547 @@
+@@ -0,0 +1,488 @@
 +#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 +
 +#include <linux/module.h>
 +#include <linux/miscdevice.h>
 +#include <linux/delay.h>
-+#include <linux/mutex.h>
 +#include <linux/smp.h>
 +#include <linux/ps5.h>
 +#include <asm/amd/node.h>
@@ -73,8 +72,6 @@ index 000000000..df9205bb2
 +	u64 gfx_cacw_len;
 +	u32 bapm_param[176][2];
 +};
-+
-+static DEFINE_MUTEX(mp1_mbox_mutex);
 +
 +static const struct bapm_param_set bapm_param_set_1 = {
 +	.dpm_wac = {
@@ -252,7 +249,7 @@ index 000000000..df9205bb2
 +        return 0;
 +}
 +
-+static int __mp1fw_sendmsg(struct mp1_msg *msg, u8 msgid)
++static int mp1fw_sendmsg(struct mp1_msg *msg, u8 msgid)
 +{
 +	if (mp1fw_waitmsg(MP1_C2PMSG_90, msgid)) {
 +		pr_err("[MP1ERROR] : %s: Error : busy msgid=0x%X, arg=0x%08X\n", __func__, msgid, msg->arg);
@@ -283,18 +280,7 @@ index 000000000..df9205bb2
 +	return 0;
 +}
 +
-+static int mp1fw_sendmsg(struct mp1_msg *msg, u8 msgid)
-+{
-+	int ret;
-+
-+	mutex_lock(&mp1_mbox_mutex);
-+	ret = __mp1fw_sendmsg(msg, msgid);
-+	mutex_unlock(&mp1_mbox_mutex);
-+
-+	return ret;
-+}
-+
-+static int __mp1fw_test_sendmsg(struct mp1_msg *msg, uint8_t msgid)
++static int mp1fw_test_sendmsg(struct mp1_msg *msg, uint8_t msgid)
 +{
 +	if (mp1fw_waitmsg(MP1_C2PMSG_96, msgid)) {
 +		printk("[MP1ERROR] : %s: Error : busy msgid=0x%X, arg=0x%08X\n", __func__, msgid, msg->arg);
@@ -319,46 +305,6 @@ index 000000000..df9205bb2
 +
 +	return 0;
 +}
-+
-+static int mp1fw_test_sendmsg(struct mp1_msg *msg, uint8_t msgid)
-+{
-+	int ret;
-+
-+	mutex_lock(&mp1_mbox_mutex);
-+	ret = __mp1fw_test_sendmsg(msg, msgid);
-+	mutex_unlock(&mp1_mbox_mutex);
-+
-+	return ret;
-+}
-+
-+int ps5_mp1_mailbox_xfer(enum ps5_mp1_queue queue, u8 msgid, u32 arg,
-+			  u32 *resp_val)
-+{
-+	struct mp1_msg msg = {
-+		.arg = arg,
-+	};
-+	int ret;
-+
-+	switch (queue) {
-+	case PS5_MP1_QUEUE0:
-+		ret = mp1fw_sendmsg(&msg, msgid);
-+		break;
-+	case PS5_MP1_QUEUE_TEST:
-+		ret = mp1fw_test_sendmsg(&msg, msgid);
-+		break;
-+	default:
-+		return -EINVAL;
-+	}
-+
-+	if (ret)
-+		return ret;
-+
-+	if (resp_val)
-+		*resp_val = msg.resp_val;
-+
-+	return 0;
-+}
-+EXPORT_SYMBOL_GPL(ps5_mp1_mailbox_xfer);
 +
 +static int mp1_set_wc_cpu(int mode)
 +{
@@ -408,19 +354,14 @@ index 000000000..df9205bb2
 +static int mp1_universal_mode_enter(u32 *params)
 +{
 +	struct mp1_msg msg = {};
-+	int ret;
 +
-+	mutex_lock(&mp1_mbox_mutex);
 +	pcirc_smn_write(MP1_C2PMSG_56, params[1]);
 +	pcirc_smn_write(MP1_C2PMSG_57, params[2]);
 +	pcirc_smn_write(MP1_C2PMSG_58, params[3]);
 +	pcirc_smn_write(MP1_C2PMSG_59, params[4]);
 +
 +	msg.arg = params[0];
-+	ret = __mp1fw_sendmsg(&msg, PPSMC_MSG_UniversalModeEntry);
-+	mutex_unlock(&mp1_mbox_mutex);
-+
-+	return ret;
++	return mp1fw_sendmsg(&msg, PPSMC_MSG_UniversalModeEntry);
 +}
 +
 +static int mp1_universal_mode_exit(void)
@@ -558,439 +499,12 @@ index 000000000..df9205bb2
 +MODULE_AUTHOR("Andy Nguyen");
 +MODULE_DESCRIPTION("PlayStation 5 MP1 SMU driver");
 +MODULE_LICENSE("GPL");
-diff --git a/drivers/ps5/power.c b/drivers/ps5/power.c
-new file mode 100644
-index 000000000..0608f570c
---- /dev/null
-+++ b/drivers/ps5/power.c
-@@ -0,0 +1,421 @@
-+// SPDX-License-Identifier: GPL-2.0
-+/*
-+ * PlayStation 5 APU power controls.
-+ *
-+ * CPU P-states are exposed through cpufreq. PS5-specific GPU GFXCLK, data
-+ * fabric P-state, and voltage telemetry are exposed as device attributes.
-+ */
-+
-+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
-+
-+#include <linux/cpufreq.h>
-+#include <linux/device.h>
-+#include <linux/delay.h>
-+#include <linux/kernel.h>
-+#include <linux/module.h>
-+#include <linux/platform_device.h>
-+#include <linux/ps5.h>
-+#include <linux/slab.h>
-+
-+#define PS5_CPU_MASK_ALL		0xff
-+#define PS5_CPU_DEFAULT_PSTATE		0
-+#define PS5_GPU_DEFAULT_MHZ		2000
-+#define PS5_GPU_MIN_MHZ			400
-+#define PS5_GPU_MAX_MHZ			2380
-+#define PS5_DF_DEFAULT_PSTATE		3
-+#define PS5_DF_SAFE_MIN_PSTATE		2
-+#define PS5_DF_MAX_PSTATE		3
-+#define PS5_VERIFY_TRIES		2000
-+#define PS5_VERIFY_SLEEP_US		1500
-+
-+#define PPSMC_MSG_REQUEST_CORE_PSTATE	0x0b
-+#define PPSMC_MSG_QUERY_CORE_PSTATE	0x0c
-+#define PPSMC_MSG_REQUEST_GFXCLK	0x0e
-+#define PPSMC_MSG_QUERY_GFXCLK		0x0f
-+#define PPSMC_MSG_REQUEST_DF_PSTATE	0x12
-+#define PPSMC_MSG_QUERY_DF_PSTATE	0x13
-+#define PPSMC_MSG_GET_CPU_VOLTAGE	0x36
-+#define PPSMC_MSG_GET_GPU_VOLTAGE	0x37
-+
-+struct ps5_cpu_pstate {
-+	unsigned int pstate;
-+	unsigned int khz;
-+};
-+
-+static const struct ps5_cpu_pstate ps5_cpu_pstates[] = {
-+	{ 0, 3200000 },
-+	{ 1, 2560000 },
-+	{ 2, 2327000 },
-+	{ 3, 1969000 },
-+	{ 4, 1829000 },
-+	{ 5, 1600000 },
-+	{ 6, 1280000 },
-+	{ 7,  800000 },
-+};
-+
-+static struct cpufreq_frequency_table ps5_cpufreq_table[] = {
-+	{ .driver_data = 0, .frequency = 3200000 },
-+	{ .driver_data = 1, .frequency = 2560000 },
-+	{ .driver_data = 2, .frequency = 2327000 },
-+	{ .driver_data = 3, .frequency = 1969000 },
-+	{ .driver_data = 4, .frequency = 1829000 },
-+	{ .driver_data = 5, .frequency = 1600000 },
-+	{ .driver_data = 6, .frequency = 1280000 },
-+	{ .driver_data = 7, .frequency =  800000 },
-+	{ .frequency = CPUFREQ_TABLE_END },
-+};
-+
-+static bool allow_unsafe_df;
-+module_param(allow_unsafe_df, bool, 0644);
-+MODULE_PARM_DESC(allow_unsafe_df, "allow df0/df1 writes despite known mailbox hang risk");
-+
-+static struct platform_device *ps5_power_pdev;
-+
-+static int ps5_mp1_xfer(enum ps5_mp1_queue queue, u8 msg, u32 arg, u32 *val)
-+{
-+	return ps5_mp1_mailbox_xfer(queue, msg, arg, val);
-+}
-+
-+static int ps5_cpu_set_pstate(u32 mask, u32 pstate)
-+{
-+	u32 arg = (mask & 0xff) | ((pstate & 0x0f) << 16);
-+
-+	return ps5_mp1_xfer(PS5_MP1_QUEUE0, PPSMC_MSG_REQUEST_CORE_PSTATE,
-+			    arg, NULL);
-+}
-+
-+static int ps5_cpu_get_pstate(u32 cpu, u32 *pstate)
-+{
-+	return ps5_mp1_xfer(PS5_MP1_QUEUE0, PPSMC_MSG_QUERY_CORE_PSTATE,
-+			    cpu & 0xff, pstate);
-+}
-+
-+static unsigned int ps5_cpu_pstate_to_khz(u32 pstate)
-+{
-+	int i;
-+
-+	for (i = 0; i < ARRAY_SIZE(ps5_cpu_pstates); i++) {
-+		if (ps5_cpu_pstates[i].pstate == pstate)
-+			return ps5_cpu_pstates[i].khz;
-+	}
-+
-+	return 0;
-+}
-+
-+static int ps5_gpu_get_gfxclk(u32 *mhz)
-+{
-+	return ps5_mp1_xfer(PS5_MP1_QUEUE0, PPSMC_MSG_QUERY_GFXCLK, 0, mhz);
-+}
-+
-+static int ps5_gpu_set_gfxclk(u32 mhz)
-+{
-+	return ps5_mp1_xfer(PS5_MP1_QUEUE0, PPSMC_MSG_REQUEST_GFXCLK, mhz,
-+			    NULL);
-+}
-+
-+static int ps5_df_get_pstate(u32 *pstate)
-+{
-+	return ps5_mp1_xfer(PS5_MP1_QUEUE0, PPSMC_MSG_QUERY_DF_PSTATE, 0,
-+			    pstate);
-+}
-+
-+static int ps5_df_set_pstate(u32 pstate)
-+{
-+	return ps5_mp1_xfer(PS5_MP1_QUEUE0, PPSMC_MSG_REQUEST_DF_PSTATE,
-+			    pstate, NULL);
-+}
-+
-+static int ps5_read_voltage(u8 msg, u32 *mv)
-+{
-+	return ps5_mp1_xfer(PS5_MP1_QUEUE_TEST, msg, 0, mv);
-+}
-+
-+static int ps5_wait_u32(const char *name, int (*read)(u32 *), u32 target)
-+{
-+	u32 cur = 0;
-+	int i, ret;
-+
-+	for (i = 0; i < PS5_VERIFY_TRIES; i++) {
-+		ret = read(&cur);
-+		if (ret)
-+			return ret;
-+		if (cur == target)
-+			return 0;
-+		usleep_range(PS5_VERIFY_SLEEP_US, PS5_VERIFY_SLEEP_US + 500);
-+	}
-+
-+	pr_warn("%s verify timeout: target %u, last %u\n", name, target, cur);
-+	return -ETIMEDOUT;
-+}
-+
-+static int ps5_gpu_set_verified(u32 mhz)
-+{
-+	int ret;
-+
-+	ret = ps5_gpu_set_gfxclk(mhz);
-+	if (ret)
-+		return ret;
-+
-+	return ps5_wait_u32("gfxclk", ps5_gpu_get_gfxclk, mhz);
-+}
-+
-+static int ps5_df_set_verified(u32 pstate)
-+{
-+	int ret;
-+
-+	ret = ps5_df_set_pstate(pstate);
-+	if (ret)
-+		return ret;
-+
-+	return ps5_wait_u32("df_pstate", ps5_df_get_pstate, pstate);
-+}
-+
-+static int ps5_restore_defaults(void)
-+{
-+	int ret, first = 0;
-+
-+	ret = ps5_cpu_set_pstate(PS5_CPU_MASK_ALL, PS5_CPU_DEFAULT_PSTATE);
-+	if (ret && !first)
-+		first = ret;
-+
-+	ret = ps5_gpu_set_verified(PS5_GPU_DEFAULT_MHZ);
-+	if (ret && !first)
-+		first = ret;
-+
-+	ret = ps5_df_set_verified(PS5_DF_DEFAULT_PSTATE);
-+	if (ret && !first)
-+		first = ret;
-+
-+	return first;
-+}
-+
-+static int ps5_cpufreq_init(struct cpufreq_policy *policy)
-+{
-+	cpumask_copy(policy->cpus, cpu_possible_mask);
-+	policy->shared_type = CPUFREQ_SHARED_TYPE_ANY;
-+	policy->freq_table = ps5_cpufreq_table;
-+	policy->cpuinfo.transition_latency = CPUFREQ_DEFAULT_TRANSITION_LATENCY_NS;
-+
-+	cpufreq_generic_init(policy, ps5_cpufreq_table,
-+			     CPUFREQ_DEFAULT_TRANSITION_LATENCY_NS);
-+
-+	return 0;
-+}
-+
-+static int ps5_cpufreq_target_index(struct cpufreq_policy *policy,
-+				    unsigned int index)
-+{
-+	if (index >= ARRAY_SIZE(ps5_cpufreq_table) - 1)
-+		return -EINVAL;
-+
-+	return ps5_cpu_set_pstate(PS5_CPU_MASK_ALL,
-+				  ps5_cpufreq_table[index].driver_data);
-+}
-+
-+static unsigned int ps5_cpufreq_get(unsigned int cpu)
-+{
-+	u32 pstate;
-+
-+	if (ps5_cpu_get_pstate(cpu, &pstate))
-+		return 0;
-+
-+	return ps5_cpu_pstate_to_khz(pstate);
-+}
-+
-+static int ps5_cpufreq_suspend(struct cpufreq_policy *policy)
-+{
-+	return ps5_cpu_set_pstate(PS5_CPU_MASK_ALL, PS5_CPU_DEFAULT_PSTATE);
-+}
-+
-+static struct cpufreq_driver ps5_cpufreq_driver = {
-+	.verify		= cpufreq_generic_frequency_table_verify,
-+	.target_index	= ps5_cpufreq_target_index,
-+	.get		= ps5_cpufreq_get,
-+	.init		= ps5_cpufreq_init,
-+	.suspend	= ps5_cpufreq_suspend,
-+	.name		= "ps5-cpufreq",
-+};
-+
-+static ssize_t gpu_gfxclk_mhz_show(struct device *dev,
-+				   struct device_attribute *attr, char *buf)
-+{
-+	u32 mhz;
-+	int ret;
-+
-+	ret = ps5_gpu_get_gfxclk(&mhz);
-+	if (ret)
-+		return ret;
-+
-+	return sysfs_emit(buf, "%u\n", mhz);
-+}
-+
-+static ssize_t gpu_gfxclk_mhz_store(struct device *dev,
-+				    struct device_attribute *attr,
-+				    const char *buf, size_t count)
-+{
-+	u32 mhz;
-+	int ret;
-+
-+	ret = kstrtou32(buf, 0, &mhz);
-+	if (ret)
-+		return ret;
-+
-+	if (mhz < PS5_GPU_MIN_MHZ || mhz > PS5_GPU_MAX_MHZ)
-+		return -ERANGE;
-+
-+	ret = ps5_gpu_set_verified(mhz);
-+	if (ret)
-+		return ret;
-+
-+	return count;
-+}
-+static DEVICE_ATTR_RW(gpu_gfxclk_mhz);
-+
-+static ssize_t df_pstate_show(struct device *dev,
-+			      struct device_attribute *attr, char *buf)
-+{
-+	u32 pstate;
-+	int ret;
-+
-+	ret = ps5_df_get_pstate(&pstate);
-+	if (ret)
-+		return ret;
-+
-+	return sysfs_emit(buf, "%u\n", pstate);
-+}
-+
-+static ssize_t df_pstate_store(struct device *dev,
-+			       struct device_attribute *attr,
-+			       const char *buf, size_t count)
-+{
-+	u32 pstate;
-+	int ret;
-+
-+	ret = kstrtou32(buf, 0, &pstate);
-+	if (ret)
-+		return ret;
-+
-+	if (pstate > PS5_DF_MAX_PSTATE)
-+		return -ERANGE;
-+	if (pstate < PS5_DF_SAFE_MIN_PSTATE && !allow_unsafe_df)
-+		return -EPERM;
-+
-+	ret = ps5_df_set_verified(pstate);
-+	if (ret)
-+		return ret;
-+
-+	return count;
-+}
-+static DEVICE_ATTR_RW(df_pstate);
-+
-+static ssize_t cpu_voltage_millivolt_show(struct device *dev,
-+					  struct device_attribute *attr,
-+					  char *buf)
-+{
-+	u32 mv;
-+	int ret;
-+
-+	ret = ps5_read_voltage(PPSMC_MSG_GET_CPU_VOLTAGE, &mv);
-+	if (ret)
-+		return ret;
-+
-+	return sysfs_emit(buf, "%u\n", mv);
-+}
-+static DEVICE_ATTR_RO(cpu_voltage_millivolt);
-+
-+static ssize_t gpu_voltage_millivolt_show(struct device *dev,
-+					  struct device_attribute *attr,
-+					  char *buf)
-+{
-+	u32 mv;
-+	int ret;
-+
-+	ret = ps5_read_voltage(PPSMC_MSG_GET_GPU_VOLTAGE, &mv);
-+	if (ret)
-+		return ret;
-+
-+	return sysfs_emit(buf, "%u\n", mv);
-+}
-+static DEVICE_ATTR_RO(gpu_voltage_millivolt);
-+
-+static ssize_t restore_defaults_store(struct device *dev,
-+				      struct device_attribute *attr,
-+				      const char *buf, size_t count)
-+{
-+	bool restore;
-+	int ret;
-+
-+	ret = kstrtobool(buf, &restore);
-+	if (ret)
-+		return ret;
-+	if (!restore)
-+		return -EINVAL;
-+
-+	ret = ps5_restore_defaults();
-+	if (ret)
-+		return ret;
-+
-+	return count;
-+}
-+static DEVICE_ATTR_WO(restore_defaults);
-+
-+static struct attribute *ps5_power_attrs[] = {
-+	&dev_attr_gpu_gfxclk_mhz.attr,
-+	&dev_attr_df_pstate.attr,
-+	&dev_attr_cpu_voltage_millivolt.attr,
-+	&dev_attr_gpu_voltage_millivolt.attr,
-+	&dev_attr_restore_defaults.attr,
-+	NULL,
-+};
-+
-+static const struct attribute_group ps5_power_attr_group = {
-+	.attrs = ps5_power_attrs,
-+};
-+
-+static int __init ps5_power_init(void)
-+{
-+	int ret;
-+
-+	ret = cpufreq_register_driver(&ps5_cpufreq_driver);
-+	if (ret)
-+		return ret;
-+
-+	ps5_power_pdev = platform_device_register_simple("ps5-power", -1,
-+							 NULL, 0);
-+	if (IS_ERR(ps5_power_pdev)) {
-+		ret = PTR_ERR(ps5_power_pdev);
-+		goto err_unregister_cpufreq;
-+	}
-+
-+	ret = sysfs_create_group(&ps5_power_pdev->dev.kobj,
-+				 &ps5_power_attr_group);
-+	if (ret)
-+		goto err_unregister_device;
-+
-+	pr_info("registered PS5 power controls\n");
-+	return 0;
-+
-+err_unregister_device:
-+	platform_device_unregister(ps5_power_pdev);
-+err_unregister_cpufreq:
-+	cpufreq_unregister_driver(&ps5_cpufreq_driver);
-+	return ret;
-+}
-+
-+static void __exit ps5_power_exit(void)
-+{
-+	if (ps5_power_pdev) {
-+		sysfs_remove_group(&ps5_power_pdev->dev.kobj,
-+				   &ps5_power_attr_group);
-+		platform_device_unregister(ps5_power_pdev);
-+	}
-+	ps5_restore_defaults();
-+	cpufreq_unregister_driver(&ps5_cpufreq_driver);
-+}
-+
-+module_init(ps5_power_init);
-+module_exit(ps5_power_exit);
-+
-+MODULE_AUTHOR("PS5 Linux contributors");
-+MODULE_DESCRIPTION("PlayStation 5 APU power control driver");
-+MODULE_LICENSE("GPL");
 diff --git a/include/linux/ps5.h b/include/linux/ps5.h
 new file mode 100644
-index 000000000..55fe4c544
+index 000000000000..4020a0b0c61c
 --- /dev/null
 +++ b/include/linux/ps5.h
-@@ -0,0 +1,101 @@
+@@ -0,0 +1,93 @@
 +#ifndef _LINUX_PS5_H
 +#define _LINUX_PS5_H
 +
@@ -1082,13 +596,5 @@ index 000000000..55fe4c544
 +
 +void mp1_set_pm1_addr(u64 addr);
 +int mp1_set_sleep_entry(void);
-+
-+enum ps5_mp1_queue {
-+	PS5_MP1_QUEUE0,
-+	PS5_MP1_QUEUE_TEST,
-+};
-+
-+int ps5_mp1_mailbox_xfer(enum ps5_mp1_queue queue, u8 msgid, u32 arg,
-+			  u32 *resp_val);
 +
 +#endif /* _LINUX_PS5_H */
