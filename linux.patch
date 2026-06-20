@@ -1625,6 +1625,51 @@ index f8c13bad4ac2..e2e6a2605f2a 100644
  	amdgpu_dm_update_hdcp(state);
  
  	/* Handle connector state changes */
+diff --git a/drivers/gpu/drm/amd/display/dc/bios/command_table2.c b/drivers/gpu/drm/amd/display/dc/bios/command_table2.c
+index 17ef515c6c69..8b9c1f6509fd 100644
+--- a/drivers/gpu/drm/amd/display/dc/bios/command_table2.c
++++ b/drivers/gpu/drm/amd/display/dc/bios/command_table2.c
+@@ -40,6 +40,10 @@
+ #include "dc_dmub_srv.h"
+ #include "dc.h"
+ 
++#ifdef CONFIG_X86_PS5
++#include <linux/ps5.h>
++#endif
++
+ #define DC_LOGGER \
+ 	bp->base.ctx->logger
+ 
+@@ -222,6 +226,17 @@ static enum bp_result transmitter_control_fallback(
+ 	struct bios_parser *bp,
+ 	struct bp_transmitter_control *cntl);
+ 
++#ifdef CONFIG_X86_PS5
++
++static enum bp_result svm_transmitter_control_v1_6(
++	struct bios_parser *bp,
++	struct bp_transmitter_control *cntl)
++{
++	return svm_execute_guest((void *)transmitter_control_v1_6, (u64)bp, (u64)cntl, 0, 0);
++}
++
++#endif
++
+ static void init_transmitter_control(struct bios_parser *bp)
+ {
+ 	uint8_t frev;
+@@ -232,7 +247,11 @@ static void init_transmitter_control(struct bios_parser *bp)
+ 
+ 	switch (crev) {
+ 	case 6:
++#ifdef CONFIG_X86_PS5
++		bp->cmd_tbl.transmitter_control = svm_transmitter_control_v1_6;
++#else
+ 		bp->cmd_tbl.transmitter_control = transmitter_control_v1_6;
++#endif
+ 		break;
+ 	case 7:
+ 		bp->cmd_tbl.transmitter_control = transmitter_control_v1_7;
 diff --git a/drivers/gpu/drm/amd/display/dc/clk_mgr/dcn201/dcn201_clk_mgr.c b/drivers/gpu/drm/amd/display/dc/clk_mgr/dcn201/dcn201_clk_mgr.c
 index 76c612ecfe3c..953cd538402b 100644
 --- a/drivers/gpu/drm/amd/display/dc/clk_mgr/dcn201/dcn201_clk_mgr.c
@@ -1666,50 +1711,6 @@ index 9459e8f28338..063e4a4eefdd 100644
  	.get_dig_frontend = dcn10_get_dig_frontend,
  	.fec_is_active = enc2_fec_is_active,
  	.is_in_alt_mode = dcn201_link_encoder_is_in_alt_mode,
-diff --git a/drivers/gpu/drm/amd/display/dc/dio/dcn10/dcn10_link_encoder.c b/drivers/gpu/drm/amd/display/dc/dio/dcn10/dcn10_link_encoder.c
-index 13e14aad3daa..edc4b9ccfea4 100644
---- a/drivers/gpu/drm/amd/display/dc/dio/dcn10/dcn10_link_encoder.c
-+++ b/drivers/gpu/drm/amd/display/dc/dio/dcn10/dcn10_link_encoder.c
-@@ -986,6 +986,11 @@ void dcn10_link_encoder_enable_dp_output(
- 	struct bp_transmitter_control cntl = { 0 };
- 	enum bp_result result;
- 
-+#ifdef CONFIG_X86_PS5
-+	/* Ignore this to prevent link training failure. */
-+	return;
-+#endif
-+
- 	/* Enable the PHY */
- 
- 	/* number_of_lanes is used for pixel clock adjust,
-@@ -1065,6 +1070,11 @@ void dcn10_link_encoder_disable_output(
- 	struct bp_transmitter_control cntl = { 0 };
- 	enum bp_result result;
- 
-+#ifdef CONFIG_X86_PS5
-+	/* Ignore this to prevent link training failure. */
-+	return;
-+#endif
-+
- 	if (enc->funcs->is_dig_enabled && !enc->funcs->is_dig_enabled(enc)) {
- 		/* OF_SKIP_POWER_DOWN_INACTIVE_ENCODER */
- 	/*in DP_Alt_No_Connect case, we turn off the dig already,
-diff --git a/drivers/gpu/drm/amd/display/dc/hwss/dce110/dce110_hwseq.c b/drivers/gpu/drm/amd/display/dc/hwss/dce110/dce110_hwseq.c
-index f0abbb7c2cb2..bd90d174ba24 100644
---- a/drivers/gpu/drm/amd/display/dc/hwss/dce110/dce110_hwseq.c
-+++ b/drivers/gpu/drm/amd/display/dc/hwss/dce110/dce110_hwseq.c
-@@ -1821,6 +1821,11 @@ static void power_down_clock_sources(struct dc *dc)
- {
- 	int i;
- 
-+#ifdef CONFIG_X86_PS5
-+	/* Ignore this to prevent blackscreen. */
-+	return;
-+#endif
-+
- 	if (dc->res_pool->dp_clock_source->funcs->cs_power_down(
- 		dc->res_pool->dp_clock_source) == false)
- 		dm_error("Failed to power down pll! (dp clk src)\n");
 diff --git a/drivers/gpu/drm/amd/display/dc/link/protocols/link_dp_capability.c b/drivers/gpu/drm/amd/display/dc/link/protocols/link_dp_capability.c
 index 782a45caa13d..444259795140 100644
 --- a/drivers/gpu/drm/amd/display/dc/link/protocols/link_dp_capability.c
@@ -3327,11 +3328,11 @@ index b63cd0c310bc..495b2714838b 100644
  
 diff --git a/drivers/ps5/Makefile b/drivers/ps5/Makefile
 new file mode 100644
-index 000000000000..ff1bbbbf219c
+index 000000000000..36a3f5261a26
 --- /dev/null
 +++ b/drivers/ps5/Makefile
 @@ -0,0 +1 @@
-+obj-y += spcie.o tpcie.o hdmi.o mp1.o buzzer.o
++obj-y += spcie.o tpcie.o hdmi.o mp1.o buzzer.o svm.o vmenter.o
 diff --git a/drivers/ps5/autoservo_param.h b/drivers/ps5/autoservo_param.h
 new file mode 100644
 index 000000000000..d2c25e461bf7
@@ -8429,6 +8430,181 @@ index 000000000000..e02c074ee0b1
 +MODULE_AUTHOR("Andy Nguyen");
 +MODULE_DESCRIPTION("PlayStation 5 Salina PCI Express glue driver");
 +MODULE_LICENSE("GPL");
+diff --git a/drivers/ps5/svm.c b/drivers/ps5/svm.c
+new file mode 100644
+index 000000000000..3fd58e9a6609
+--- /dev/null
++++ b/drivers/ps5/svm.c
+@@ -0,0 +1,169 @@
++#include <linux/module.h>
++#include <linux/ps5.h>
++
++#include <asm/svm.h>
++#include <asm/desc.h>
++#include <asm/io.h>
++#include <asm/debugreg.h>
++
++void svm_run_guest(u64 a0, u64 a1, u64 a2, u64 a3, u64 vmcb_phys);
++
++static DEFINE_SPINLOCK(svm_execute_lock);
++
++static void svm_set_vmcb_seg(struct vmcb_seg *s, u16 selector, u64 base, u32 limit,
++			     struct desc_struct *d)
++{
++	s->base = base;
++	s->limit = limit;
++	s->selector = selector;
++	s->attrib = 0;
++
++	if (d) {
++		if (d->g)
++			s->limit = (limit << 12) | 0xfff;
++
++		s->attrib |= (d->type & SVM_SELECTOR_TYPE_MASK);
++		s->attrib |= (d->s & 1) << SVM_SELECTOR_S_SHIFT;
++		s->attrib |= (d->dpl & 3) << SVM_SELECTOR_DPL_SHIFT;
++		s->attrib |= (d->p & 1) << SVM_SELECTOR_P_SHIFT;
++		s->attrib |= (d->avl & 1) << SVM_SELECTOR_AVL_SHIFT;
++		s->attrib |= (d->l & 1) << SVM_SELECTOR_L_SHIFT;
++		s->attrib |= (d->d & 1) << SVM_SELECTOR_DB_SHIFT;
++		s->attrib |= (d->g & 1) << SVM_SELECTOR_G_SHIFT;
++	}
++}
++
++static void svm_set_segment(struct vmcb_seg *seg, u16 selector, struct desc_ptr *desc)
++{
++	struct desc_struct *d = NULL;
++	u64 base = 0;
++	u32 limit = 0;
++
++	if (selector) {
++		d = &((struct desc_struct *)desc->address)[selector >> 3];
++		base = get_desc_base(d);
++		limit = get_desc_limit(d);
++	}
++
++	svm_set_vmcb_seg(seg, selector, base, limit, d);
++}
++
++static void svm_guest_entry(void)
++{
++	asm volatile(
++		ANNOTATE_RETPOLINE_SAFE "\n\t"
++		"call *%%rax\n\t"
++		"vmmcall\n\t"
++		: ASM_CALL_CONSTRAINT
++		:
++		: "memory"
++	);
++}
++
++static void svm_init_vmcb(struct vmcb *vmcb, void *guest_func, void *guest_stack)
++{
++	struct vmcb_save_area *save = &vmcb->save;
++	struct vmcb_control_area *ctrl = &vmcb->control;
++	u64 vmcb_phys = virt_to_phys(vmcb);
++	struct desc_ptr gdt_ptr, idt_ptr;
++	u16 sel;
++	unsigned long dr6, dr7;
++
++	memset(vmcb, 0, PAGE_SIZE);
++
++	asm volatile("vmsave %0" : : "a"(vmcb_phys) : "memory");
++
++	native_store_gdt(&gdt_ptr);
++	store_idt(&idt_ptr);
++
++	savesegment(es, sel); svm_set_segment(&save->es, sel, &gdt_ptr);
++	savesegment(cs, sel); svm_set_segment(&save->cs, sel, &gdt_ptr);
++	savesegment(ss, sel); svm_set_segment(&save->ss, sel, &gdt_ptr);
++	savesegment(ds, sel); svm_set_segment(&save->ds, sel, &gdt_ptr);
++
++	svm_set_vmcb_seg(&save->gdtr, 0, gdt_ptr.address, gdt_ptr.size, NULL);
++	svm_set_vmcb_seg(&save->idtr, 0, idt_ptr.address, idt_ptr.size, NULL);
++
++	save->cr0 = read_cr0();
++	save->cr2 = read_cr2();
++	save->cr3 = __read_cr3();
++	save->cr4 = __read_cr4();
++
++	get_debugreg(dr6, 6);
++	get_debugreg(dr7, 7);
++	save->dr6 = dr6;
++	save->dr7 = dr7;
++
++	save->rflags = native_save_fl();
++
++	save->rip = (u64)svm_guest_entry;
++	save->rax = (u64)guest_func;
++	save->rsp = (u64)guest_stack + PAGE_SIZE;
++
++	rdmsrl(MSR_EFER, save->efer);
++	rdmsrl(MSR_IA32_CR_PAT, save->g_pat);
++
++	__set_bit(INTERCEPT_VMRUN, (unsigned long *)ctrl->intercepts);
++	__set_bit(INTERCEPT_VMMCALL, (unsigned long *)ctrl->intercepts);
++
++	ctrl->asid = 1;
++	ctrl->tlb_ctl = TLB_CONTROL_FLUSH_ASID;
++}
++
++u64 svm_execute_guest(void *guest_func, u64 a0, u64 a1, u64 a2, u64 a3)
++{
++	unsigned long flags;
++	u64 efer, hsave_pa;
++	u64 exit_code;
++	u64 ret = -1;
++	struct vmcb *vmcb = NULL;
++	void *hsave_area = NULL;
++	void *guest_stack = NULL;
++
++	vmcb = (struct vmcb *)get_zeroed_page(GFP_KERNEL);
++	if (!vmcb)
++		goto err_free;
++
++	hsave_area = (void *)get_zeroed_page(GFP_KERNEL);
++	if (!hsave_area)
++		goto err_free;
++
++	guest_stack = (void *)get_zeroed_page(GFP_KERNEL);
++	if (!guest_stack)
++		goto err_free;
++
++	spin_lock_irqsave(&svm_execute_lock, flags);
++
++	rdmsrl(MSR_EFER, efer);
++	wrmsrl(MSR_EFER, efer | EFER_SVME);
++
++	rdmsrl(MSR_VM_HSAVE_PA, hsave_pa);
++	wrmsrl(MSR_VM_HSAVE_PA, virt_to_phys(hsave_area));
++
++	svm_init_vmcb(vmcb, guest_func, guest_stack);
++
++	svm_run_guest(a0, a1, a2, a3, virt_to_phys(vmcb));
++
++	exit_code = vmcb->control.exit_code;
++	if (exit_code == SVM_EXIT_VMMCALL) {
++		ret = vmcb->save.rax;
++	} else {
++		pr_warn("svm: unexpected exit code 0x%llx\n", exit_code);
++	}
++
++	wrmsrl(MSR_VM_HSAVE_PA, hsave_pa);
++	wrmsrl(MSR_EFER, efer);
++
++	spin_unlock_irqrestore(&svm_execute_lock, flags);
++
++err_free:
++	if (guest_stack)
++		free_page((unsigned long)guest_stack);
++	if (hsave_area)
++		free_page((unsigned long)hsave_area);
++	if (vmcb)
++		free_page((unsigned long)vmcb);
++
++	return ret;
++}
++EXPORT_SYMBOL(svm_execute_guest);
 diff --git a/drivers/ps5/tpcie.c b/drivers/ps5/tpcie.c
 new file mode 100644
 index 000000000000..23de43ea4b00
@@ -8738,6 +8914,42 @@ index 000000000000..23de43ea4b00
 +MODULE_AUTHOR("Andy Nguyen");
 +MODULE_DESCRIPTION("PlayStation 5 Titania PCI Express glue driver");
 +MODULE_LICENSE("GPL");
+diff --git a/drivers/ps5/vmenter.S b/drivers/ps5/vmenter.S
+new file mode 100644
+index 000000000000..f5348c0d7e82
+--- /dev/null
++++ b/drivers/ps5/vmenter.S
+@@ -0,0 +1,30 @@
++#include <linux/linkage.h>
++#include <asm/asm.h>
++
++.section .noinstr.text, "ax"
++
++SYM_FUNC_START(svm_run_guest)
++	push %_ASM_BP
++	mov  %_ASM_SP, %_ASM_BP
++	push %r15
++	push %r14
++	push %r13
++	push %r12
++	push %_ASM_BX
++
++	mov %r8, %_ASM_AX
++
++	clgi
++	vmload %_ASM_AX
++	vmrun %_ASM_AX
++	vmsave %_ASM_AX
++	stgi
++
++	pop %_ASM_BX
++	pop %r12
++	pop %r13
++	pop %r14
++	pop %r15
++	pop %_ASM_BP
++	RET
++SYM_FUNC_END(svm_run_guest)
 diff --git a/include/linux/dmi.h b/include/linux/dmi.h
 index c8700e6a694d..7d0afd378c4e 100644
 --- a/include/linux/dmi.h
@@ -8754,10 +8966,10 @@ index c8700e6a694d..7d0afd378c4e 100644
  extern void dmi_setup(void);
 diff --git a/include/linux/ps5.h b/include/linux/ps5.h
 new file mode 100644
-index 000000000000..4020a0b0c61c
+index 000000000000..24adcd953ab3
 --- /dev/null
 +++ b/include/linux/ps5.h
-@@ -0,0 +1,93 @@
+@@ -0,0 +1,95 @@
 +#ifndef _LINUX_PS5_H
 +#define _LINUX_PS5_H
 +
@@ -8849,6 +9061,8 @@ index 000000000000..4020a0b0c61c
 +
 +void mp1_set_pm1_addr(u64 addr);
 +int mp1_set_sleep_entry(void);
++
++u64 svm_execute_guest(void *guest_func, u64 a0, u64 a1, u64 a2, u64 a3);
 +
 +#endif /* _LINUX_PS5_H */
 diff --git a/scripts/setlocalversion b/scripts/setlocalversion
