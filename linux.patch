@@ -1566,7 +1566,7 @@ index f8c13bad4ac2..e2e6a2605f2a 100644
  	if ((mode->flags & DRM_MODE_FLAG_INTERLACE) ||
  			(mode->flags & DRM_MODE_FLAG_DBLSCAN))
  		return result;
-@@ -10957,12 +10978,58 @@ static void amdgpu_dm_atomic_commit_tail(struct drm_atomic_state *state)
+@@ -10957,12 +10978,62 @@ static void amdgpu_dm_atomic_commit_tail(struct drm_atomic_state *state)
  	drm_atomic_helper_update_legacy_modeset_state(dev, state);
  	drm_dp_mst_atomic_wait_for_dependencies(state);
  
@@ -1606,12 +1606,16 @@ index f8c13bad4ac2..e2e6a2605f2a 100644
 +		     drm_atomic_crtc_needs_modeset(new_crtc_state))) {
 +			if (dm_new_crtc_state->stream && dc_is_dp_signal(dm_new_crtc_state->stream->signal)) {
 +				struct dc_stream_state *stream = dm_new_crtc_state->stream;
-+				int channels = 0;
++				int channels = 0, j;
 +
-+				for (i = 0; i < stream->audio_info.mode_count; i++) {
-+					if (stream->audio_info.modes[i].channel_count > channels)
-+						channels = stream->audio_info.modes[i].channel_count;
++				for (j = 0; j < stream->audio_info.mode_count; j++) {
++					if (stream->audio_info.modes[j].channel_count > channels)
++						channels = stream->audio_info.modes[j].channel_count;
 +				}
++
++				/* Fallback to stereo if EDID has no audio modes */
++				if (channels == 0)
++					channels = 2;
 +
 +				sceHdmiSetVideoConfig(&new_crtc_state->mode);
 +				sceHdmiDeviceSetVideoMute(0);
