@@ -9115,10 +9115,10 @@ index 585b2f3117b0..16d5e2178ae0 100644
  MODULE_DEVICE_TABLE(pci, pci_ids);
 diff --git a/drivers/usb/host/xhci-ps5.c b/drivers/usb/host/xhci-ps5.c
 new file mode 100644
-index 000000000000..6dc7014deed9
+index 000000000000..b1c2ff265c7e
 --- /dev/null
 +++ b/drivers/usb/host/xhci-ps5.c
-@@ -0,0 +1,500 @@
+@@ -0,0 +1,516 @@
 +/*
 +* Playstation 5 Salina XHCI driver helper
 +* Author: https://github.com/c0w-ar
@@ -9233,31 +9233,43 @@ index 000000000000..6dc7014deed9
 +}
 +
 +inline u32 xhci_read(u64 offset, u32 reg) {
-+    return readl(salina_xhci.xhci_bar + offset + reg);
++    if (salina_xhci.xhci_bar)
++        return readl(salina_xhci.xhci_bar + offset + reg);
++    else
++        return -1;
 +}
 +
 +inline void xhci_write(u64 offset, u32 reg, u32 val) {
-+    writel(val, salina_xhci.xhci_bar + offset + reg);
++    if (salina_xhci.xhci_bar)
++        writel(val, salina_xhci.xhci_bar + offset + reg);
 +}
 +
 +inline void xhci_or(u64 offset, u32 reg, u32 val) {
-+    u32 val_old = readl(salina_xhci.xhci_bar + offset + reg);
-+    writel(val_old | val, salina_xhci.xhci_bar + offset + reg);
++    if (salina_xhci.xhci_bar) {
++        u32 val_old = readl(salina_xhci.xhci_bar + offset + reg);
++        writel(val_old | val, salina_xhci.xhci_bar + offset + reg);
++    }
 +}
 +
 +inline void xhci_and(u64 offset, u32 reg, u32 val) {
-+    u32 val_old = readl(salina_xhci.xhci_bar + offset + reg);
-+    writel(val_old & val, salina_xhci.xhci_bar + offset + reg);
++    if (salina_xhci.xhci_bar) {
++        u32 val_old = readl(salina_xhci.xhci_bar + offset + reg);
++        writel(val_old & val, salina_xhci.xhci_bar + offset + reg);
++    }
 +}
 +
 +inline void xhci_bit_set(u64 offset, u32 reg, u32 bit) {
-+    u32 val_old = readl(salina_xhci.xhci_bar + offset + reg);
-+    writel(val_old | BIT(bit), salina_xhci.xhci_bar + offset + reg);
++    if (salina_xhci.xhci_bar) {
++        u32 val_old = readl(salina_xhci.xhci_bar + offset + reg);
++        writel(val_old | BIT(bit), salina_xhci.xhci_bar + offset + reg);
++    }
 +}
 +
 +inline void xhci_bit_unset(u64 offset, u32 reg, u32 bit) {
-+    u32 val_old = readl(salina_xhci.xhci_bar + offset + reg);
-+    writel(val_old & ~BIT(bit), salina_xhci.xhci_bar + offset + reg);
++    if (salina_xhci.xhci_bar) {
++        u32 val_old = readl(salina_xhci.xhci_bar + offset + reg);
++        writel(val_old & ~BIT(bit), salina_xhci.xhci_bar + offset + reg);
++    }
 +}
 +
 +inline void xhci_bit_toggle(u64 offset, u32 reg, u32 bit) {
@@ -9495,15 +9507,19 @@ index 000000000000..6dc7014deed9
 +        xhci_bit_toggle(0x100000, 0x0, 1);
 +        xhci_bit_toggle(0x100000, 0x0, 17);
 +        xhci_bit_toggle(0x100000, 0x0, 25);
-+        usleep_range(30000, 30100);
++        udelay(10000);
++        udelay(10000);
++        udelay(10000);
 +    }
 +
 +    xhci_bit_unset(0x100000, 0x0, 1);
-+    usleep_range(20000, 20100);
++    udelay(10000);
++    udelay(10000);
 +
 +    if (salina_xhci.revision == 0x110000) {
 +        xhci_bit_set(0x100000, 0x0, 2);
-+        usleep_range(20000, 20100);
++        udelay(10000);
++        udelay(10000);
 +    }
 +
 +    salina_usb_phy_config_step_4();
