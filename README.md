@@ -24,7 +24,6 @@ sudo make install
 ## TODO
 
 - amdgpu smu driver to show correct gpu frequency and temperature
-- xhci driver adjustment for 0x104d:0x9108 to enable bluetooth
 - hdmi converter improvments: hdr, rgb range, 120hz
 
 ## Bugs
