@@ -20,13 +20,13 @@ on:
         default: ''
 jobs:
   build:
-    runs-on: ubuntu-latest
-    timeout-minutes: 300
+    runs-on: self-hosted
+    timeout-minutes: 120
     permissions:
       contents: write
 
     env:
-      CCACHE_DIR: /tmp/ccache
+      CCACHE_DIR: /home/opc/ccache
 
     steps:
       - name: Checkout image builder
@@ -34,7 +34,7 @@ jobs:
         with:
           repository: ps5-linux/ps5-linux-image
           path: image
-          ref: build-image-rpm-in-all-format
+          ref: main
 
       - name: Build kernel
         run: |
@@ -43,6 +43,15 @@ jobs:
           bash image/build_image.sh --kernel-only \
             --distro "$FORMAT" \
             --patches-ref "$PATCHES_REF"
+          # build_image.sh's --distro all skips the rpm packager. Run the rpm
+          # branch explicitly so the release ships .rpm alongside .deb/.pkg.tar.zst.
+          # ccache holds the kernel objects — this second call only re-runs
+          # the rpm packaging step.
+          if [ "$FORMAT" = "all" ]; then
+            bash image/build_image.sh --kernel-only \
+              --distro fedora \
+              --patches-ref "$PATCHES_REF"
+          fi
 
       - name: Read kernel and patches version
         id: version
@@ -74,7 +83,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Create or update release
-        if: github.event_name != 'pull_request' && github.event_name != 'pull_request_target' && github.repository == 'ps5-linux/ps5-linux-patches'
+        if: github.event_name != 'pull_request' && github.event_name != 'pull_request_target'
         uses: softprops/action-gh-release@v3
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
