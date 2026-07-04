@@ -8132,10 +8132,10 @@ index 000000000000..5ea1519823c3
 +#endif /* _PS5_FAN_H */
 diff --git a/drivers/ps5/spcie.c b/drivers/ps5/spcie.c
 new file mode 100644
-index 000000000000..e02c074ee0b1
+index 000000000000..4a28451f89eb
 --- /dev/null
 +++ b/drivers/ps5/spcie.c
-@@ -0,0 +1,1149 @@
+@@ -0,0 +1,1146 @@
 +#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 +
 +#include <linux/module.h>
@@ -8966,9 +8966,6 @@ index 000000000000..e02c074ee0b1
 +	/* Enable notifications */
 +	icc_button_enable_all_notifications(1);
 +	icc_thermal_enable_notification(1);
-+
-+	/* Update autoservo param */
-+	icc_fan_update_autoservo_param();
 +
 +	/* Set LED to white dim */
 +	icc_indicator_set_led_white(0);
