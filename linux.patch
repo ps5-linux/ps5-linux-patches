@@ -3409,11 +3409,11 @@ index b63cd0c310bc..495b2714838b 100644
  
 diff --git a/drivers/ps5/Makefile b/drivers/ps5/Makefile
 new file mode 100644
-index 000000000000..ccb2740e3375
+index 000000000000..b4b42394aed9
 --- /dev/null
 +++ b/drivers/ps5/Makefile
 @@ -0,0 +1,2 @@
-+obj-y += spcie.o tpcie.o hdmi.o mp1.o buzzer.o svm.o vmenter.o
++obj-y += spcie.o tpcie.o hdmi.o mp1.o buzzer.o svm.o vmenter.o fan.o
 +obj-y += led/
 diff --git a/drivers/ps5/autoservo_param.h b/drivers/ps5/autoservo_param.h
 new file mode 100644
@@ -5620,6 +5620,205 @@ index 000000000000..f48ad6f92534
 +MODULE_AUTHOR("Armandas Kvietkus");
 +MODULE_DESCRIPTION("PlayStation 5 chassis piezo buzzer");
 +MODULE_LICENSE("GPL");
+diff --git a/drivers/ps5/fan.c b/drivers/ps5/fan.c
+new file mode 100644
+index 000000000000..33a48c664f73
+--- /dev/null
++++ b/drivers/ps5/fan.c
+@@ -0,0 +1,193 @@
++// SPDX-License-Identifier: GPL-2.0-only
++
++#include <linux/module.h>
++#include <linux/platform_device.h>
++#include <linux/slab.h>
++#include <linux/err.h>
++#include <linux/unaligned.h>
++#include <linux/ps5.h>
++#include "ps5-fan.h"
++
++static int icc_fan_txn(u8 svc, u16 mt, u16 len,
++		       const u8 *data, size_t dlen,
++		       u8 *reply_out, size_t rlen)
++{
++	u8 *buf;
++	struct icc_msg *msg;
++	int ret;
++
++	buf = kzalloc(ICC_MSG_MAX_SIZE, GFP_KERNEL);
++	if (!buf)
++		return -ENOMEM;
++	msg = (struct icc_msg *)buf;
++
++	msg->service_id = svc;
++	msg->msg_type = mt;
++	msg->length = len;
++	if (data && dlen)
++		memcpy(msg->data, data, dlen);
++
++	ret = icc_query(buf, buf);
++	if (!ret && reply_out && rlen)
++		memcpy(reply_out, msg->data, rlen);
++
++	kfree(buf);
++	return ret;
++}
++
++static int icc_fan_get_curset(u8 zone, u32 out[PS5_CURSET_COUNT])
++{
++	u8 req[ICC_MSG_MAX_SIZE - sizeof(struct icc_msg)] = {};
++	u8 reply[ICC_MSG_MIN_SIZE] = {};
++	int ret, i;
++
++	req[PS5_FAN_ZONE_OFF] = zone;
++
++	ret = icc_fan_txn(ICC_SERVICE_ID_FAN, PS5_FAN_MT_CURSET_GET,
++			  PS5_FAN_CURSET_GET_LEN, req, sizeof(req),
++			  reply, sizeof(reply));
++	if (ret)
++		return ret;
++
++	for (i = 0; i < PS5_CURSET_COUNT; i++)
++		out[i] = get_unaligned_le32(reply +
++			  PS5_FAN_CURSET_GET_OFF + i * 4);
++	return 0;
++}
++
++static int icc_fan_set_curset(u8 zone, u8 config, const u32 in[PS5_CURSET_COUNT])
++{
++	u8 req[ICC_MSG_MAX_SIZE - sizeof(struct icc_msg)] = {};
++	int i;
++
++	req[PS5_FAN_ZONE_OFF] = zone;
++	req[PS5_FAN_CONFIG_OFF] = config;
++	for (i = 0; i < PS5_CURSET_COUNT; i++)
++		put_unaligned_le32(in[i], req + PS5_FAN_CURSET_SET_OFF + i * 4);
++
++	return icc_fan_txn(ICC_SERVICE_ID_FAN, PS5_FAN_MT_CURSET_SET,
++			   PS5_FAN_CURSET_SET_LEN, req, sizeof(req), NULL, 0);
++}
++
++static DEFINE_MUTEX(fan_lock);
++
++static int fan_get_target_temp(u8 zone, u16 *celsius)
++{
++	u32 cs[PS5_CURSET_COUNT];
++	int ret;
++
++	mutex_lock(&fan_lock);
++	ret = icc_fan_get_curset(zone, cs);
++	mutex_unlock(&fan_lock);
++	if (ret)
++		return ret;
++
++	*celsius = cs[PS5_CURSET_TARGETTEMP] >> PS5_TARGETTEMP_SHIFT;
++	return 0;
++}
++
++static int fan_set_target_temp(u8 zone, u8 config, u16 celsius)
++{
++	u32 cs[PS5_CURSET_COUNT];
++	int ret;
++
++	mutex_lock(&fan_lock);
++	ret = icc_fan_get_curset(zone, cs);
++	if (!ret) {
++		cs[PS5_CURSET_TARGETTEMP] = (u32)celsius << PS5_TARGETTEMP_SHIFT;
++		ret = icc_fan_set_curset(zone, config, cs);
++	}
++	mutex_unlock(&fan_lock);
++	return ret;
++}
++
++static ssize_t target_temp_show(struct device *dev,
++				struct device_attribute *attr, char *buf)
++{
++	u16 c;
++	int ret = fan_get_target_temp(PS5_ZONE_MAINSOC, &c);
++
++	if (ret)
++		return ret;
++	return sysfs_emit(buf, "%u\n", c);
++}
++
++static ssize_t target_temp_store(struct device *dev,
++				 struct device_attribute *attr,
++				 const char *buf, size_t count)
++{
++	u16 c;
++	int ret;
++
++	if (kstrtou16(buf, 10, &c))
++		return -EINVAL;
++	if (c > 100)
++		return -ERANGE;
++
++	ret = fan_set_target_temp(PS5_ZONE_MAINSOC, 0, c);
++	return ret ? ret : count;
++}
++static DEVICE_ATTR_RW(target_temp);
++
++static struct attribute *ps5_fan_attrs[] = {
++	&dev_attr_target_temp.attr,
++	NULL,
++};
++ATTRIBUTE_GROUPS(ps5_fan);
++
++#define PS5_FAN_BOOT_TARGET_TEMP	75
++
++static int ps5_fan_probe(struct platform_device *pdev)
++{
++	int ret = icc_fan_update_autoservo_param();
++
++	if (ret)
++		dev_warn(&pdev->dev, "autoservo param load failed: %d\n", ret);
++
++	ret = fan_set_target_temp(PS5_ZONE_MAINSOC, 0, PS5_FAN_BOOT_TARGET_TEMP);
++	if (ret)
++		dev_warn(&pdev->dev, "boot target temp set failed: %d\n", ret);
++
++	return 0;
++}
++
++static struct platform_driver ps5_fan_driver = {
++	.probe  = ps5_fan_probe,
++	.driver = {
++		.name = "ps5-fan",
++		.dev_groups = ps5_fan_groups,
++	},
++};
++
++static struct platform_device *ps5_fan_pdev;
++
++static int __init ps5_fan_init(void)
++{
++	int ret = platform_driver_register(&ps5_fan_driver);
++
++	if (ret)
++		return ret;
++
++	ps5_fan_pdev = platform_device_register_simple("ps5-fan", -1, NULL, 0);
++	if (IS_ERR(ps5_fan_pdev)) {
++		ret = PTR_ERR(ps5_fan_pdev);
++		platform_driver_unregister(&ps5_fan_driver);
++		ps5_fan_pdev = NULL;
++		return ret;
++	}
++	return 0;
++}
++
++static void __exit ps5_fan_exit(void)
++{
++	if (ps5_fan_pdev)
++		platform_device_unregister(ps5_fan_pdev);
++	platform_driver_unregister(&ps5_fan_driver);
++}
++
++module_init(ps5_fan_init);
++module_exit(ps5_fan_exit);
++
++MODULE_LICENSE("GPL");
++MODULE_DESCRIPTION("PS5 fan driver");
++MODULE_ALIAS("platform:ps5-fan");
 diff --git a/drivers/ps5/hdmi.c b/drivers/ps5/hdmi.c
 new file mode 100644
 index 000000000000..8f094490d677
@@ -7872,6 +8071,65 @@ index 000000000000..4af890c842a7
 +MODULE_AUTHOR("Andy Nguyen");
 +MODULE_DESCRIPTION("PlayStation 5 MP1 SMU driver");
 +MODULE_LICENSE("GPL");
+diff --git a/drivers/ps5/ps5-fan.h b/drivers/ps5/ps5-fan.h
+new file mode 100644
+index 000000000000..5ea1519823c3
+--- /dev/null
++++ b/drivers/ps5/ps5-fan.h
+@@ -0,0 +1,53 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef _PS5_FAN_H
++#define _PS5_FAN_H
++
++#include <linux/ps5.h>
++
++#define PS5_FAN_MT_MODE_SET	0x02
++#define PS5_FAN_MT_MODE_GET	0x03
++#define PS5_FAN_MT_CURSET_SET	0x06
++#define PS5_FAN_MT_CURSET_GET	0x07
++
++#define PS5_FAN_CURSET_SET_LEN	0x40
++#define PS5_FAN_CURSET_GET_LEN	ICC_MSG_MIN_SIZE
++
++enum ps5_fan_zone {
++	PS5_ZONE_MAINSOC = 0,
++	PS5_ZONE_LOCAL1  = 1,
++	PS5_ZONE_LOCAL2  = 2,
++	PS5_ZONE_LOCAL3  = 3,
++	PS5_ZONE_COUNT   = 4,
++};
++
++enum ps5_fan_mode {
++	PS5_FAN_MODE_AUTO    = 1,
++	PS5_FAN_MODE_MAXIMUM = 2,
++	PS5_FAN_MODE_MINIMUM = 3,
++	PS5_FAN_MODE_MANUAL  = 4,
++	PS5_FAN_MODE_SP1     = 5,
++};
++#define PS5_FAN_MODE_MIN	PS5_FAN_MODE_AUTO
++#define PS5_FAN_MODE_MAX	PS5_FAN_MODE_SP1
++
++enum ps5_curset_id {
++	PS5_CURSET_TARGETTEMP = 0,
++	PS5_CURSET_PGAIN      = 1,
++	PS5_CURSET_IGAIN      = 2,
++	PS5_CURSET_ILIMIT     = 3,
++	PS5_CURSET_ULIMIT     = 4,
++	PS5_CURSET_DLIMIT     = 5,
++	PS5_CURSET_COUNT      = 6,
++};
++
++#define PS5_FAN_ZONE_OFF	0
++#define PS5_FAN_MODE_OFF	1
++#define PS5_FAN_SETTING_OFF	1
++#define PS5_FAN_CONFIG_OFF	1
++#define PS5_FAN_CURSET_OFF	0x04
++#define PS5_FAN_CURSET_GET_OFF	PS5_FAN_CURSET_OFF
++#define PS5_FAN_CURSET_SET_OFF	PS5_FAN_CURSET_OFF
++
++#define PS5_TARGETTEMP_SHIFT	8
++
++#endif /* _PS5_FAN_H */
 diff --git a/drivers/ps5/spcie.c b/drivers/ps5/spcie.c
 new file mode 100644
 index 000000000000..e02c074ee0b1
