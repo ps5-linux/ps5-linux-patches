@@ -32,3 +32,4 @@ sudo make install
 - hdmi audio output does not work on some monitors
 - hdmi 1440p and 2160p video output does not work on some monitors
 - monitor swap is not supported
+- hdmi cec is not supported
