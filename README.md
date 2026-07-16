@@ -31,3 +31,4 @@ sudo make install
 - screen save does not work properly
 - hdmi audio output does not work on some monitors
 - hdmi 1440p and 2160p video output does not work on some monitors
+- monitor swap is not supported
