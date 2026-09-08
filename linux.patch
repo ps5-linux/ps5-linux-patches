@@ -5752,7 +5752,7 @@ index 000000000000..e68819f9e32a
 +
 +	bootparam_get_config_gddr6_id(&gddr6_id);
 +	gddr6_vendor = gddr6_id & 0xf;
-+	gddr6_revision = gddr6_id >> 4;
++	gddr6_revision = (gddr6_id >> 4) & 0xf;
 +
 +	if (board_mask_a == BOARD_SANCARLO_1 || board_mask_a == BOARD_SANCARLO_2) {
 +		board_name = "Sancarlo";
