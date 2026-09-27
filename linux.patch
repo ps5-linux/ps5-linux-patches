@@ -2183,7 +2183,7 @@ index 000000000000..119cdcd49a63
 +#endif /* _MTS_H */
 diff --git a/drivers/net/phy/mts/mts_main.c b/drivers/net/phy/mts/mts_main.c
 new file mode 100644
-index 000000000000..dd087950bb40
+index 000000000000..7cfde3e6ef88
 --- /dev/null
 +++ b/drivers/net/phy/mts/mts_main.c
 @@ -0,0 +1,874 @@
@@ -2893,10 +2893,10 @@ index 000000000000..dd087950bb40
 +
 +	cancel_delayed_work_sync(&p->link_poll);
 +
++	napi_disable(&p->napi);
 +	gbe_stop_dma(p);
 +
 +	free_irq(p->irq, p);
-+	napi_disable(&p->napi);
 +	return 0;
 +}
 +
