@@ -1977,10 +1977,10 @@ index 000000000000..e01771be845b
 +mts-y := mts_main.o mts_phy.o
 diff --git a/drivers/net/phy/mts/mts.h b/drivers/net/phy/mts/mts.h
 new file mode 100644
-index 000000000000..a0e41029aea2
+index 000000000000..119cdcd49a63
 --- /dev/null
 +++ b/drivers/net/phy/mts/mts.h
-@@ -0,0 +1,186 @@
+@@ -0,0 +1,200 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * PlayStation 5 Gigabit Ethernet driver
@@ -2008,6 +2008,7 @@ index 000000000000..a0e41029aea2
 +#define GBE_REG_MODE		0x10
 +#define GBE_REG_MAC_HI		0x14
 +#define GBE_REG_MAC_LO		0x18
++#define GBE_REG_MC_HASH		0x1c
 +#define GBE_REG_RXBUF		0x30
 +#define GBE_REG_TX_DMA_CTRL	0x34
 +#define GBE_REG_RX_DMA_CTRL	0x38
@@ -2016,7 +2017,7 @@ index 000000000000..a0e41029aea2
 +#define GBE_REG_TX_RING_BASE	0x44
 +#define GBE_REG_RX_RING_BASE	0x48
 +#define GBE_REG_ISR		0x50
-+#define GBE_REG_IER		0x54
++#define GBE_REG_IMR		0x54
 +#define GBE_REG_SERDES		0x74
 +#define GBE_REG_RX_PCODE	0x78
 +#define GBE_REG_TXKICK		0x9c
@@ -2026,6 +2027,8 @@ index 000000000000..a0e41029aea2
 +#define GBE_REG_FILT_DATA	0x1c8
 +#define GBE_REG_RX_EN		0x1d4
 +#define GBE_REG_COAL		0x204
++#define GBE_REG_MIB_RX_DROP	0x110
++#define GBE_REG_MIB_RX_CRC	0x114
 +
 +#define GBE_PCS_BASE		0x4000
 +
@@ -2037,10 +2040,14 @@ index 000000000000..a0e41029aea2
 +#define GBE_ISR_LINK		BIT(2)
 +#define GBE_ISR_TX_DONE		BIT(7)
 +#define GBE_ISR_RX_DONE		BIT(6)
++#define GBE_ISR_RX_EMPTY	(BIT(1) | BIT(5))
++#define GBE_ISR_TIMER		BIT(18)
++#define GBE_ISR_WORK		(GBE_ISR_RX_DONE | GBE_ISR_RX_EMPTY | GBE_ISR_TX_DONE)
 +#define GBE_ISR_ERRORS		0x7be600
 +#define GBE_ISR_LSO_RECOVER	0x500000
 +
 +#define GBE_ST_LSO_RECOVER	0
++#define GBE_ST_RX_RESTART	1
 +
 +#define GBE_ERR_LSO_FIFO	0x200000
 +#define GBE_ERR_LSO_PROTO	0x80000
@@ -2050,15 +2057,20 @@ index 000000000000..a0e41029aea2
 +#define GBE_ERR_UDP_CKSUM	0x2000
 +#define GBE_ERR_RX_PCODE	0x400
 +
-+#define GBE_COAL_VAL		0x10001388
++#define GBE_IMR_NORMAL		0x1418
++#define GBE_IMR_ALL		0x7fffff
++#define GBE_IMR_TIMER		(GBE_IMR_ALL & ~GBE_ISR_TIMER)
 +
-+/* this chip has no intx pin and its msi sometimes never fires (cold boot). when
-+ * we detect that, the link_poll work becomes the only way to service the rings,
-+ * so it polls this often (ms) instead of once a second to stay responsive. */
-+#define GBE_POLL_FALLBACK_MS	10
++#define GBE_COAL_EN		BIT(28)
++#define GBE_COAL_TICK		0x1388
 +
-+/* excludes bit2 (LINK) - polling link state avoids IRQ storm from autoneg pulses */
-+#define GBE_IER_MASK		0x5014fa
++#define GBE_MODE_PROMISC	BIT(4)
++
++#define GBE_MC_HASH_CLEAR	BIT(31)
++#define GBE_MC_HASH_CLEARED	BIT(17)
++#define GBE_MC_HASH_BUSY	BIT(14)
++#define GBE_MC_HASH_SET		0x7000
++#define GBE_MC_HASH_BITS	256
 +
 +#define GBE_DMA_STOP		BIT(1)
 +#define GBE_DMA_KICK		BIT(2)
@@ -2084,10 +2096,12 @@ index 000000000000..a0e41029aea2
 +
 +#define GBE_RING_SIZE		256
 +#define GBE_DESC_RING_BYTES	(GBE_RING_SIZE * sizeof(struct gbe_desc))
++#define GBE_RX_RING_SIZE	1024
++#define GBE_RX_RING_BYTES	(GBE_RX_RING_SIZE * sizeof(struct gbe_desc))
 +#define GBE_RX_BUF_LEN		1536
 +
 +#define GBE_TX_SCRATCH_SIZE	0xa0000
-+#define GBE_RX_POOL_SIZE	(GBE_RING_SIZE * GBE_DESC_RX_LEN)
++#define GBE_RX_POOL_SIZE	(GBE_RX_RING_SIZE * GBE_DESC_RX_LEN)
 +
 +struct gbe_priv {
 +	struct net_device	*netdev;
@@ -2105,6 +2119,7 @@ index 000000000000..a0e41029aea2
 +	unsigned int		tx_scratch_off;
 +	unsigned int		tx_head;
 +	unsigned int		tx_tail;
++	bool			coal_on;
 +
 +	/* rx just has the chip dma straight into a slotted pool */
 +	struct gbe_desc		*rx_ring;
@@ -2140,7 +2155,6 @@ index 000000000000..a0e41029aea2
 +	u32			cnt_link_up;
 +	u32			cnt_link_down;
 +	unsigned int		poll_tick;
-+	/* used by link_poll_work to detect frozen IRQ delivery on cold boot */
 +	u32			irq_watchdog;
 +};
 +
@@ -2169,10 +2183,10 @@ index 000000000000..a0e41029aea2
 +#endif /* _MTS_H */
 diff --git a/drivers/net/phy/mts/mts_main.c b/drivers/net/phy/mts/mts_main.c
 new file mode 100644
-index 000000000000..c193cb2d1bd4
+index 000000000000..dd087950bb40
 --- /dev/null
 +++ b/drivers/net/phy/mts/mts_main.c
-@@ -0,0 +1,823 @@
+@@ -0,0 +1,874 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * PlayStation 5 Gigabit Ethernet driver
@@ -2189,6 +2203,9 @@ index 000000000000..c193cb2d1bd4
 +#include <linux/ethtool.h>
 +#include <linux/interrupt.h>
 +#include <linux/delay.h>
++#include <linux/iopoll.h>
++#include <linux/crc32.h>
++#include <linux/bitrev.h>
 +#include <linux/ps5.h>
 +
 +#include "mts.h"
@@ -2281,14 +2298,14 @@ index 000000000000..c193cb2d1bd4
 +{
 +	int i;
 +
-+	for (i = 0; i < GBE_RING_SIZE; i++) {
++	for (i = 0; i < GBE_RX_RING_SIZE; i++) {
 +		p->rx_ring[i].buf_addr = cpu_to_le32(p->rx_pool_dma +
 +						     i * GBE_DESC_RX_LEN);
 +		p->rx_ring[i].word2 = 0;
 +		p->rx_ring[i].word3 = 0;
 +		dma_wmb();
 +		p->rx_ring[i].flags = cpu_to_le32(GBE_DESC_RX_LEN |
-+			(i == GBE_RING_SIZE - 1 ? GBE_DESC_WRAP : 0));
++			(i == GBE_RX_RING_SIZE - 1 ? GBE_DESC_WRAP : 0));
 +	}
 +	p->rx_head = 0;
 +}
@@ -2310,7 +2327,8 @@ index 000000000000..c193cb2d1bd4
 +
 +	gbe_set(p, GBE_REG_TX_DMA_CTRL, BIT(0));
 +	gbe_set(p, GBE_REG_RX_DMA_CTRL, BIT(0));
-+	gbe_wr(p, GBE_REG_IER, GBE_IER_MASK);
++	gbe_wr(p, GBE_REG_ISR, gbe_rd(p, GBE_REG_ISR));
++	gbe_wr(p, GBE_REG_IMR, GBE_IMR_NORMAL);
 +}
 +
 +/* tell both dma engines to stop, then jsut spin till the bit clears */
@@ -2318,7 +2336,9 @@ index 000000000000..c193cb2d1bd4
 +{
 +	int i;
 +
-+	gbe_wr(p, GBE_REG_IER, 0);
++	gbe_wr(p, GBE_REG_IMR, GBE_IMR_ALL);
++	gbe_wr(p, GBE_REG_COAL, 0);
++	p->coal_on = false;
 +
 +	gbe_set(p, GBE_REG_TX_DMA_CTRL, GBE_DMA_STOP);
 +	for (i = 0; i < 1000000 &&
@@ -2342,7 +2362,10 @@ index 000000000000..c193cb2d1bd4
 +	gbe_wr(p, GBE_REG_MODE, (gbe_rd(p, GBE_REG_MODE) & 0xffffff6e) | 0x81);
 +	gbe_wr(p, GBE_REG_RXBUF, 0x10100);
 +	gbe_write_mac(p, p->netdev->dev_addr);
-+	gbe_wr(p, GBE_REG_COAL, GBE_COAL_VAL);
++	gbe_wr(p, GBE_REG_COAL, 0);
++	p->coal_on = false;
++	gbe_rd(p, GBE_REG_MIB_RX_DROP);
++	gbe_rd(p, GBE_REG_MIB_RX_CRC);
 +}
 +
 +/* the two rings + tx bounce scratch + rx pool, all dma coherent */
@@ -2353,7 +2376,7 @@ index 000000000000..c193cb2d1bd4
 +	if (!p->tx_ring)
 +		return -ENOMEM;
 +
-+	p->rx_ring = dma_alloc_coherent(&p->pdev->dev, GBE_DESC_RING_BYTES,
++	p->rx_ring = dma_alloc_coherent(&p->pdev->dev, GBE_RX_RING_BYTES,
 +					&p->rx_ring_dma, GFP_KERNEL);
 +	if (!p->rx_ring)
 +		goto err_rx;
@@ -2374,7 +2397,7 @@ index 000000000000..c193cb2d1bd4
 +	dma_free_coherent(&p->pdev->dev, GBE_TX_SCRATCH_SIZE,
 +			  p->tx_scratch, p->tx_scratch_dma);
 +err_scratch:
-+	dma_free_coherent(&p->pdev->dev, GBE_DESC_RING_BYTES,
++	dma_free_coherent(&p->pdev->dev, GBE_RX_RING_BYTES,
 +			  p->rx_ring, p->rx_ring_dma);
 +err_rx:
 +	dma_free_coherent(&p->pdev->dev, GBE_DESC_RING_BYTES,
@@ -2388,7 +2411,7 @@ index 000000000000..c193cb2d1bd4
 +		dma_free_coherent(&p->pdev->dev, GBE_DESC_RING_BYTES,
 +				  p->tx_ring, p->tx_ring_dma);
 +	if (p->rx_ring)
-+		dma_free_coherent(&p->pdev->dev, GBE_DESC_RING_BYTES,
++		dma_free_coherent(&p->pdev->dev, GBE_RX_RING_BYTES,
 +				  p->rx_ring, p->rx_ring_dma);
 +	if (p->tx_scratch)
 +		dma_free_coherent(&p->pdev->dev, GBE_TX_SCRATCH_SIZE,
@@ -2474,10 +2497,10 @@ index 000000000000..c193cb2d1bd4
 +		p->rx_ring[i].word3 = 0;
 +		dma_wmb();
 +		p->rx_ring[i].flags = cpu_to_le32(GBE_DESC_RX_LEN |
-+			(i == GBE_RING_SIZE - 1 ? GBE_DESC_WRAP : 0));
++			(i == GBE_RX_RING_SIZE - 1 ? GBE_DESC_WRAP : 0));
 +
 +		done++;
-+		i = (i + 1) % GBE_RING_SIZE;
++		i = (i + 1) % GBE_RX_RING_SIZE;
 +	}
 +	p->rx_head = i;
 +
@@ -2572,26 +2595,50 @@ index 000000000000..c193cb2d1bd4
 +	return 0;
 +}
 +
-+/* no hw filter wired up yet, just log what got asked for */
++static u32 gbe_mc_hash(const u8 *addr)
++{
++	u8 rev[ETH_ALEN];
++	u32 crc;
++	int i;
++
++	for (i = 0; i < ETH_ALEN; i++)
++		rev[i] = bitrev8(addr[i]);
++
++	crc = crc32_be(~0, rev, ETH_ALEN);
++	return (crc & 7) + (crc >> 27) * 8;
++}
++
 +static void gbe_set_rx_mode(struct net_device *dev)
 +{
 +	struct gbe_priv *p = netdev_priv(dev);
 +	struct netdev_hw_addr *ha;
-+	int mc_count = 0;
++	u32 val;
++	int i;
 +
-+	netdev_for_each_mc_addr(ha, dev)
-+		mc_count++;
++	if (dev->flags & IFF_PROMISC) {
++		gbe_set(p, GBE_REG_MODE, GBE_MODE_PROMISC);
++		return;
++	}
 +
-+	netdev_info(dev,
-+		"rx_mode: flags=%#x %s%s%s%s mc_count=%d\n",
-+		dev->flags,
-+		(dev->flags & IFF_PROMISC)   ? "PROMISC "   : "",
-+		(dev->flags & IFF_ALLMULTI)  ? "ALLMULTI "  : "",
-+		(dev->flags & IFF_MULTICAST) ? "MULTICAST " : "",
-+		(dev->flags & IFF_BROADCAST) ? "BROADCAST " : "",
-+		mc_count);
++	gbe_clr(p, GBE_REG_MODE, GBE_MODE_PROMISC);
 +
-+	(void)p;
++	if (dev->flags & IFF_ALLMULTI) {
++		for (i = 0; i < GBE_MC_HASH_BITS; i++)
++			gbe_wr(p, GBE_REG_MC_HASH, GBE_MC_HASH_SET | i);
++		return;
++	}
++
++	gbe_wr(p, GBE_REG_MC_HASH, GBE_MC_HASH_CLEAR);
++	if (readl_poll_timeout_atomic(p->base + GBE_REG_MC_HASH, val,
++				      val & GBE_MC_HASH_CLEARED, 1, 10000))
++		netdev_warn(dev, "mc hash clear timeout\n");
++
++	netdev_for_each_mc_addr(ha, dev) {
++		gbe_wr(p, GBE_REG_MC_HASH, GBE_MC_HASH_SET | gbe_mc_hash(ha->addr));
++		if (readl_poll_timeout_atomic(p->base + GBE_REG_MC_HASH, val,
++					      !(val & GBE_MC_HASH_BUSY), 1, 10000))
++			netdev_warn(dev, "mc hash set timeout\n");
++	}
 +}
 +
 +static void gbe_get_drvinfo(struct net_device *dev, struct ethtool_drvinfo *info)
@@ -2642,37 +2689,30 @@ index 000000000000..c193cb2d1bd4
 +		gbe_rd(p, GBE_REG_LINK));
 +}
 +
-+/* link irq is masked off (autoneg pulses storm it lol), so poll it once a sec */
++static void gbe_read_mib(struct gbe_priv *p)
++{
++	p->netdev->stats.rx_missed_errors += gbe_rd(p, GBE_REG_MIB_RX_DROP);
++	p->netdev->stats.rx_crc_errors += gbe_rd(p, GBE_REG_MIB_RX_CRC);
++}
++
 +static void gbe_link_poll_work(struct work_struct *work)
 +{
 +	struct gbe_priv *p = container_of(to_delayed_work(work),
 +					  struct gbe_priv, link_poll);
-+	unsigned long delay = HZ;
 +
 +	gbe_link_change(p);
++	gbe_read_mib(p);
 +
-+	/*
-+	 * on a cold boot the chip sometimes just never fires its first irq and
-+	 * napi sits there doing nothing. if the irq count hasnt moved since last
-+	 * tick the msi is dead -- kick napi by hand and re-arm the mask. msi is the
-+	 * only irq source (no intx pin), so while it stays dead we keep polling fast
-+	 * (GBE_POLL_FALLBACK_MS) instead of once a second, or interactive rx lags by
-+	 * up to a second. as soon as real irqs start arriving we drop back to HZ.
-+	 */
-+	if (netif_running(p->netdev) && p->cnt_irq == p->irq_watchdog) {
++	if (netif_running(p->netdev) && p->cnt_irq == p->irq_watchdog)
 +		napi_schedule(&p->napi);
-+		gbe_wr(p, GBE_REG_IER, GBE_IER_MASK);
-+		delay = max_t(unsigned long, 1, msecs_to_jiffies(GBE_POLL_FALLBACK_MS));
-+	}
 +	p->irq_watchdog = p->cnt_irq;
 +
-+	/* dump stats roughly every 10s regardless of the current poll cadence */
-+	if (++p->poll_tick >= 10 * HZ / delay) {
++	if (++p->poll_tick >= 10) {
 +		gbe_dump_stats(p);
 +		p->poll_tick = 0;
 +	}
 +
-+	schedule_delayed_work(&p->link_poll, delay);
++	schedule_delayed_work(&p->link_poll, HZ);
 +}
 +
 +/*
@@ -2702,63 +2742,14 @@ index 000000000000..c193cb2d1bd4
 +	spin_unlock(&p->lock);
 +}
 +
-+/* napi: do tx, then rx, turn irqs back on once we drop under budget */
-+static int gbe_poll(struct napi_struct *napi, int budget)
++static void gbe_handle_status(struct gbe_priv *p, u32 status)
 +{
-+	struct gbe_priv *p = container_of(napi, struct gbe_priv, napi);
-+	int rx_done;
-+
-+	/* isr flags this when it sees an lso cause, deal with it out of hardirq */
-+	if (test_and_clear_bit(GBE_ST_LSO_RECOVER, &p->state))
-+		gbe_lso_recover(p);
-+
-+	spin_lock(&p->lock);
-+	gbe_tx_complete(p);
-+	gbe_set(p, GBE_REG_TX_DMA_CTRL, GBE_DMA_KICK);
-+	spin_unlock(&p->lock);
-+
-+	rx_done = gbe_rx_poll(p, budget);
-+
-+	if (rx_done < budget) {
-+		u32 isr;
-+
-+		napi_complete_done(napi, rx_done);
-+		gbe_wr(p, GBE_REG_IER, GBE_IER_MASK);
-+		/* chip wont send a fresh msi for stuff that landed while ier was
-+		   off, so re-check isr and re-kick or interrupts just freeze.
-+		   ACK the causes (W1C) first: otherwise a latched/undelivered
-+		   cause (the msi-silent cold-boot case) keeps this condition
-+		   permanently true and spins napi at ~30k polls/s, pinning a cpu. */
-+		isr = gbe_rd(p, GBE_REG_ISR) & GBE_IER_MASK;
-+		if (isr) {
-+			gbe_wr(p, GBE_REG_ISR, isr);
-+			if (napi_schedule_prep(&p->napi)) {
-+				gbe_wr(p, GBE_REG_IER, 0);
-+				__napi_schedule(&p->napi);
-+			}
-+		}
-+	}
-+	return rx_done;
-+}
-+
-+static irqreturn_t gbe_isr(int irq, void *data)
-+{
-+	struct gbe_priv *p = data;
-+	u32 status;
-+
-+	status = gbe_rd(p, GBE_REG_ISR);
-+	if (!status)
-+		return IRQ_NONE;
-+
-+	/* ack everyhting we just read off */
-+	gbe_wr(p, GBE_REG_ISR, status);
-+
 +	p->cnt_irq++;
 +	if (status & GBE_ISR_LINK)
 +		p->cnt_irq_link++;
 +	if (status & GBE_ISR_TX_DONE)
 +		p->cnt_irq_tx++;
-+	if (status & GBE_ISR_RX_DONE)
++	if (status & (GBE_ISR_RX_DONE | GBE_ISR_RX_EMPTY))
 +		p->cnt_irq_rx++;
 +	if (status & GBE_ISR_ERRORS)
 +		p->cnt_irq_err++;
@@ -2786,9 +2777,83 @@ index 000000000000..c193cb2d1bd4
 +	if (status & GBE_ISR_LSO_RECOVER)
 +		set_bit(GBE_ST_LSO_RECOVER, &p->state);
 +
-+	/* mask irqs and let napi do the ring work out of hardirq */
++	if (status & GBE_ISR_RX_EMPTY)
++		set_bit(GBE_ST_RX_RESTART, &p->state);
++}
++
++static int gbe_poll(struct napi_struct *napi, int budget)
++{
++	struct gbe_priv *p = container_of(napi, struct gbe_priv, napi);
++	unsigned int tx_tail;
++	bool busy;
++	int rx_done;
++	u32 isr;
++
++	if (test_and_clear_bit(GBE_ST_LSO_RECOVER, &p->state))
++		gbe_lso_recover(p);
++
++	spin_lock(&p->lock);
++	tx_tail = p->tx_tail;
++	gbe_tx_complete(p);
++	busy = tx_tail != p->tx_tail;
++	if (p->tx_tail != p->tx_head)
++		gbe_set(p, GBE_REG_TX_DMA_CTRL, GBE_DMA_KICK);
++	spin_unlock(&p->lock);
++
++	rx_done = gbe_rx_poll(p, budget);
++
++	if (test_and_clear_bit(GBE_ST_RX_RESTART, &p->state))
++		gbe_set(p, GBE_REG_RX_DMA_CTRL, GBE_DMA_KICK);
++
++	if (rx_done >= budget)
++		return budget;
++
++	if (!napi_complete_done(napi, rx_done))
++		return rx_done;
++
++	if (busy || rx_done) {
++		if (!p->coal_on) {
++			gbe_wr(p, GBE_REG_COAL, GBE_COAL_EN | GBE_COAL_TICK);
++			p->coal_on = true;
++		}
++		gbe_wr(p, GBE_REG_IMR, GBE_IMR_TIMER);
++		return rx_done;
++	}
++
++	if (p->coal_on) {
++		gbe_wr(p, GBE_REG_COAL, 0);
++		p->coal_on = false;
++		gbe_wr(p, GBE_REG_ISR, GBE_ISR_TIMER);
++	}
++	gbe_wr(p, GBE_REG_IMR, GBE_IMR_NORMAL);
++
++	isr = gbe_rd(p, GBE_REG_ISR) & ~(GBE_IMR_NORMAL | GBE_ISR_TIMER);
++	if (isr) {
++		gbe_wr(p, GBE_REG_ISR, isr);
++		gbe_handle_status(p, isr);
++		if ((isr & GBE_ISR_WORK) && napi_schedule_prep(&p->napi)) {
++			gbe_wr(p, GBE_REG_IMR, GBE_IMR_ALL);
++			__napi_schedule(&p->napi);
++		}
++	}
++
++	return rx_done;
++}
++
++static irqreturn_t gbe_isr(int irq, void *data)
++{
++	struct gbe_priv *p = data;
++	u32 status;
++
++	status = gbe_rd(p, GBE_REG_ISR);
++	if (!(status & ~GBE_IMR_NORMAL))
++		return IRQ_NONE;
++
++	gbe_wr(p, GBE_REG_ISR, status);
++	gbe_handle_status(p, status);
++
 +	if (napi_schedule_prep(&p->napi)) {
-+		gbe_wr(p, GBE_REG_IER, 0);
++		gbe_wr(p, GBE_REG_IMR, GBE_IMR_ALL);
 +		__napi_schedule(&p->napi);
 +	}
 +
