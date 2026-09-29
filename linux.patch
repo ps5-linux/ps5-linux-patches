@@ -5738,7 +5738,7 @@ new file mode 100644
 index 000000000000..e68819f9e32a
 --- /dev/null
 +++ b/drivers/ps5/fan.c
-@@ -0,0 +1,368 @@
+@@ -0,0 +1,378 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +
 +#include <linux/module.h>
@@ -5955,21 +5955,31 @@ index 000000000000..e68819f9e32a
 +
 +static int icc_fan_get_curset(u8 zone, u32 out[PS5_CURSET_COUNT])
 +{
-+	u8 req[ICC_MSG_MAX_SIZE - sizeof(struct icc_msg)] = {};
++	size_t req_size = ICC_MSG_MAX_SIZE - sizeof(struct icc_msg);
++	u8 *req;
 +	u8 reply[ICC_MSG_MIN_SIZE] = {};
 +	int ret, i;
++
++	/* Allocate req array dynamically from the heap */
++	req = kzalloc(req_size, GFP_KERNEL);
++	if (!req)
++		return -ENOMEM;
 +
 +	req[PS5_FAN_ZONE_OFF] = zone;
 +
 +	ret = icc_fan_txn(ICC_SERVICE_ID_FAN, PS5_FAN_MT_CURSET_GET,
-+			  PS5_FAN_CURSET_GET_LEN, req, sizeof(req),
++			  PS5_FAN_CURSET_GET_LEN, req, req_size,
 +			  reply, sizeof(reply));
-+	if (ret)
++	if (ret) {
++		kfree(req); // Free memory on error escape path
 +		return ret;
++	}
 +
 +	for (i = 0; i < PS5_CURSET_COUNT; i++)
 +		out[i] = get_unaligned_le32(reply +
 +			  PS5_FAN_CURSET_GET_OFF + i * 4);
++
++	kfree(req); // Free memory on successful exit path
 +	return 0;
 +}
 +
