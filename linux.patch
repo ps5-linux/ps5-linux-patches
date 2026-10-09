@@ -1304,14 +1304,14 @@ index e84b75c03c6f..539ba07e9853 100644
  		break;
  	}
 diff --git a/drivers/gpu/drm/amd/amdgpu/amdgpu_discovery.c b/drivers/gpu/drm/amd/amdgpu/amdgpu_discovery.c
-index 47e0680ed7b1..4bf82da2efa3 100644
+index 47e0680ed7b1..4dbf3b03b2f7 100644
 --- a/drivers/gpu/drm/amd/amdgpu/amdgpu_discovery.c
 +++ b/drivers/gpu/drm/amd/amdgpu/amdgpu_discovery.c
 @@ -2665,6 +2665,10 @@ static int amdgpu_discovery_set_mm_ip_blocks(struct amdgpu_device *adev)
  				amdgpu_device_ip_block_add(adev, &jpeg_v2_0_ip_block);
  			break;
  		case IP_VERSION(2, 0, 3):
-+			if (IS_ENABLED(CONFIG_X86_PS5) && adev->pdev->device == 0x13fb) {
++			if (IS_ENABLED(CONFIG_X86_PS5)) {
 +				adev->vcn.num_vcn_inst = 1;
 +				amdgpu_device_ip_block_add(adev, &vcn_v2_0_ip_block);
 +			}
@@ -1431,7 +1431,7 @@ index fcd81242059e..1844a3231bb2 100644
  	header = (const struct common_firmware_header *)
  		adev->sdma.instance[instance].fw->data;
 diff --git a/drivers/gpu/drm/amd/amdgpu/amdgpu_vcn.c b/drivers/gpu/drm/amd/amdgpu/amdgpu_vcn.c
-index 616967519869..8e35b6f445d8 100644
+index 616967519869..5277ecfc8593 100644
 --- a/drivers/gpu/drm/amd/amdgpu/amdgpu_vcn.c
 +++ b/drivers/gpu/drm/amd/amdgpu/amdgpu_vcn.c
 @@ -75,6 +75,9 @@ MODULE_FIRMWARE(FIRMWARE_RENOIR);
@@ -1448,7 +1448,7 @@ index 616967519869..8e35b6f445d8 100644
  	adev->vcn.inst[i].adev = adev;
  	adev->vcn.inst[i].inst = i;
  	amdgpu_ucode_ip_version_decode(adev, UVD_HWIP, ucode_prefix, sizeof(ucode_prefix));
-+	if (IS_ENABLED(CONFIG_X86_PS5) && adev->pdev->device == 0x13fb)
++	if (IS_ENABLED(CONFIG_X86_PS5))
 +		strscpy(ucode_prefix, "ps5_vcn", sizeof(ucode_prefix));
  
  	if (i != 0 && adev->vcn.per_inst_fw) {
@@ -1631,18 +1631,13 @@ index b809942b1eb7..c9144ac4ac38 100644
  	if (r)
  		return r;
 diff --git a/drivers/gpu/drm/amd/amdgpu/vcn_v2_0.c b/drivers/gpu/drm/amd/amdgpu/vcn_v2_0.c
-index 0442bfcfd384..30892e9087df 100644
+index 0442bfcfd384..d9634611eed5 100644
 --- a/drivers/gpu/drm/amd/amdgpu/vcn_v2_0.c
 +++ b/drivers/gpu/drm/amd/amdgpu/vcn_v2_0.c
-@@ -90,6 +90,25 @@ static const struct amdgpu_hwip_reg_entry vcn_reg_list_2_0[] = {
+@@ -90,6 +90,20 @@ static const struct amdgpu_hwip_reg_entry vcn_reg_list_2_0[] = {
  	SOC15_REG_ENTRY_STR(VCN, 0, mmUVD_DPG_PAUSE)
  };
  
-+static bool vcn_v2_0_is_ps5(struct amdgpu_device *adev)
-+{
-+	return IS_ENABLED(CONFIG_X86_PS5) && adev->pdev->device == 0x13fb;
-+}
-+
 +static void vcn_v2_0_ps5_reset(struct amdgpu_device *adev)
 +{
 +	WREG32_SOC15(UVD, 0, mmUVD_SOFT_RESET, 0x3ffff);
@@ -1660,29 +1655,29 @@ index 0442bfcfd384..30892e9087df 100644
  static void vcn_v2_0_set_dec_ring_funcs(struct amdgpu_device *adev);
  static void vcn_v2_0_set_enc_ring_funcs(struct amdgpu_device *adev);
  static void vcn_v2_0_set_irq_funcs(struct amdgpu_device *adev);
-@@ -167,7 +186,7 @@ static int vcn_v2_0_sw_init(struct amdgpu_ip_block *ip_block)
+@@ -167,7 +181,7 @@ static int vcn_v2_0_sw_init(struct amdgpu_ip_block *ip_block)
  
  	ring = &adev->vcn.inst->ring_dec;
  
 -	ring->use_doorbell = true;
-+	ring->use_doorbell = !vcn_v2_0_is_ps5(adev);
++	ring->use_doorbell = !IS_ENABLED(CONFIG_X86_PS5);
  	ring->doorbell_index = adev->doorbell_index.vcn.vcn_ring0_1 << 1;
  	ring->vm_hub = AMDGPU_MMHUB0(0);
  
-@@ -199,7 +218,7 @@ static int vcn_v2_0_sw_init(struct amdgpu_ip_block *ip_block)
+@@ -199,7 +213,7 @@ static int vcn_v2_0_sw_init(struct amdgpu_ip_block *ip_block)
  		enum amdgpu_ring_priority_level hw_prio = amdgpu_vcn_get_enc_ring_prio(i);
  
  		ring = &adev->vcn.inst->ring_enc[i];
 -		ring->use_doorbell = true;
-+		ring->use_doorbell = !vcn_v2_0_is_ps5(adev);
++		ring->use_doorbell = !IS_ENABLED(CONFIG_X86_PS5);
  		ring->vm_hub = AMDGPU_MMHUB0(0);
  		if (!amdgpu_sriov_vf(adev))
  			ring->doorbell_index = (adev->doorbell_index.vcn.vcn_ring0_1 << 1) + 2 + i;
-@@ -291,6 +310,12 @@ static int vcn_v2_0_hw_init(struct amdgpu_ip_block *ip_block)
+@@ -291,6 +305,12 @@ static int vcn_v2_0_hw_init(struct amdgpu_ip_block *ip_block)
  	if (amdgpu_sriov_vf(adev))
  		vcn_v2_0_start_sriov(adev);
  
-+	if (vcn_v2_0_is_ps5(adev)) {
++	if (IS_ENABLED(CONFIG_X86_PS5)) {
 +		r = vcn_v2_0_set_pg_state(adev->vcn.inst, AMD_PG_STATE_UNGATE);
 +		if (r)
 +			return r;
@@ -1691,12 +1686,12 @@ index 0442bfcfd384..30892e9087df 100644
  	r = amdgpu_ring_test_helper(ring);
  	if (r)
  		return r;
-@@ -1013,7 +1038,27 @@ static int vcn_v2_0_start(struct amdgpu_vcn_inst *vinst)
+@@ -1013,7 +1033,27 @@ static int vcn_v2_0_start(struct amdgpu_vcn_inst *vinst)
  	if (adev->pg_flags & AMD_PG_SUPPORT_VCN_DPG)
  		return vcn_v2_0_start_dpg_mode(vinst, adev->vcn.inst->indirect_sram);
  
 -	vcn_v2_0_disable_static_power_gating(vinst);
-+	if (vcn_v2_0_is_ps5(adev)) {
++	if (IS_ENABLED(CONFIG_X86_PS5)) {
 +		WREG32_SOC15(UVD, 0, mmUVD_POWER_STATUS,
 +			RREG32_SOC15(UVD, 0, mmUVD_POWER_STATUS) & 2);
 +		WREG32_P(SOC15_REG_OFFSET(UVD, 0, mmUVD_SOFT_RESET),
@@ -1720,11 +1715,11 @@ index 0442bfcfd384..30892e9087df 100644
  
  	/* set uvd status busy */
  	tmp = RREG32_SOC15(UVD, 0, mmUVD_STATUS) | UVD_STATUS__UVD_BUSY;
-@@ -1096,6 +1141,13 @@ static int vcn_v2_0_start(struct amdgpu_vcn_inst *vinst)
+@@ -1096,6 +1136,13 @@ static int vcn_v2_0_start(struct amdgpu_vcn_inst *vinst)
  				break;
  			mdelay(10);
  		}
-+		if (vcn_v2_0_is_ps5(adev) && !(status & 2)) {
++		if (IS_ENABLED(CONFIG_X86_PS5) && !(status & 2)) {
 +			WREG32_P(SOC15_REG_OFFSET(UVD, 0, mmUVD_SOFT_RESET),
 +				UVD_SOFT_RESET__VCPU_SOFT_RESET_MASK,
 +				~UVD_SOFT_RESET__VCPU_SOFT_RESET_MASK);
@@ -1734,25 +1729,25 @@ index 0442bfcfd384..30892e9087df 100644
  		r = 0;
  		if (status & 2)
  			break;
-@@ -1228,6 +1280,8 @@ static int vcn_v2_0_stop(struct amdgpu_vcn_inst *vinst)
+@@ -1228,6 +1275,8 @@ static int vcn_v2_0_stop(struct amdgpu_vcn_inst *vinst)
  
  	/* wait for uvd idle */
  	r = SOC15_WAIT_ON_RREG(VCN, 0, mmUVD_STATUS, UVD_STATUS__IDLE, 0x7);
-+	if (r && vcn_v2_0_is_ps5(adev))
++	if (r && IS_ENABLED(CONFIG_X86_PS5))
 +		goto ps5_reset;
  	if (r)
  		return r;
  
-@@ -1236,6 +1290,8 @@ static int vcn_v2_0_stop(struct amdgpu_vcn_inst *vinst)
+@@ -1236,6 +1285,8 @@ static int vcn_v2_0_stop(struct amdgpu_vcn_inst *vinst)
  		UVD_LMI_STATUS__WRITE_CLEAN_MASK |
  		UVD_LMI_STATUS__WRITE_CLEAN_RAW_MASK;
  	r = SOC15_WAIT_ON_RREG(VCN, 0, mmUVD_LMI_STATUS, tmp, tmp);
-+	if (r && vcn_v2_0_is_ps5(adev))
++	if (r && IS_ENABLED(CONFIG_X86_PS5))
 +		goto ps5_reset;
  	if (r)
  		return r;
  
-@@ -1272,6 +1328,15 @@ static int vcn_v2_0_stop(struct amdgpu_vcn_inst *vinst)
+@@ -1272,6 +1323,15 @@ static int vcn_v2_0_stop(struct amdgpu_vcn_inst *vinst)
  	/* clear status */
  	WREG32_SOC15(VCN, 0, mmUVD_STATUS, 0);
  
