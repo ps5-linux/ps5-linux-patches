@@ -34,3 +34,9 @@ On a PS5 Pro, also install the Viola firmware service, see [firmware/README.md](
 - hdmi 1440p and 2160p video output does not work on some monitors
 - monitor swap is not supported
 - hdmi cec is not supported
+
+## Experimental FLAVA3 HDMI changes
+
+The native FRL, colour/depth, 4:2:0, recovery and ALLM controls are described in
+[the implementation and review notes](docs/hdmi-review.md). These controls remain
+opt-in; exact combined-build hardware qualification is pending.
