@@ -20,6 +20,8 @@ In the same `linux` folder after compilation, do:
 sudo make modules_install && sudo make install
 ```
 
+On a PS5 Pro, also install the Viola firmware service, see [firmware/README.md](firmware/README.md#viola-firmware-ps5-pro).
+
 ## TODO
 
 - amdgpu smu driver to show correct gpu frequency and temperature
