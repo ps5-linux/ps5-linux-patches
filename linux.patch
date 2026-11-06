@@ -2628,7 +2628,7 @@ index 67137679a901..ab963ffded66 100644
  	if (q->properties.is_gws) {
  		dqm->gws_queue_count--;
 diff --git a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c
-index 941c1a312824..6ad7e58f4e64 100644
+index 941c1a312824..1cbbb58366b3 100644
 --- a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c
 +++ b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c
 @@ -80,6 +80,13 @@
@@ -2645,7 +2645,7 @@ index 941c1a312824..6ad7e58f4e64 100644
  #include <drm/drm_privacy_screen_consumer.h>
  #include <drm/display/drm_dp_mst_helper.h>
  #include <drm/display/drm_hdmi_helper.h>
-@@ -243,8 +250,32 @@ static int amdgpu_dm_atomic_check(struct drm_device *dev,
+@@ -243,8 +250,33 @@ static int amdgpu_dm_atomic_check(struct drm_device *dev,
  				  struct drm_atomic_commit *state);
  
  static void handle_hpd_irq_helper(struct amdgpu_dm_connector *aconnector);
@@ -2666,6 +2666,7 @@ index 941c1a312824..6ad7e58f4e64 100644
 +#define PS5_HOTPLUG_BACKOFF_MAX_MS	60000
 +
 +static void dm_ps5_hotplug_handler(void *data);
++static void dm_ps5_unplug_handler(void *data);
 +static bool dm_ps5_is_hdmi_connector(struct drm_connector *connector);
 +static void dm_ps5_hotplug_work_func(struct work_struct *work);
 +static void dm_ps5_hdmi_resetup_work_func(struct work_struct *work);
@@ -2678,7 +2679,7 @@ index 941c1a312824..6ad7e58f4e64 100644
  static void amdgpu_dm_backlight_set_level(struct amdgpu_display_manager *dm,
  					 int bl_idx,
  					 u32 user_brightness);
-@@ -2255,6 +2286,11 @@ static int amdgpu_dm_init(struct amdgpu_device *adev)
+@@ -2255,6 +2287,11 @@ static int amdgpu_dm_init(struct amdgpu_device *adev)
  	if (amdgpu_dc_debug_mask & DC_SKIP_DETECTION_LT)
  		adev->dm.dc->debug.skip_detection_link_training = true;
  
@@ -2690,7 +2691,7 @@ index 941c1a312824..6ad7e58f4e64 100644
  	adev->dm.dc->debug.visual_confirm = amdgpu_dc_visual_confirm;
  
  	/* TODO: Remove after DP2 receiver gets proper support of Cable ID feature */
-@@ -3288,6 +3324,16 @@ static int dm_hw_init(struct amdgpu_ip_block *ip_block)
+@@ -3288,6 +3325,17 @@ static int dm_hw_init(struct amdgpu_ip_block *ip_block)
  	r = amdgpu_dm_init(adev);
  	if (r)
  		return r;
@@ -2700,6 +2701,7 @@ index 941c1a312824..6ad7e58f4e64 100644
 +	INIT_DELAYED_WORK(&adev->dm.ps5_hdmi_resetup_work, dm_ps5_hdmi_resetup_work_func);
 +	adev->dm.ps5_hdmi_resetup_until = jiffies;
 +	hdmi_set_hotplug_handler(dm_ps5_hotplug_handler, &adev->dm);
++	hdmi_set_unplug_handler(dm_ps5_unplug_handler, &adev->dm);
 +	ps5_frl_fallback_dev = adev_to_drm(adev);
 +	ps5_frl_fallback_crtcs = 0;
 +	amdgpu_dm_ps5_usbc_init(&adev->dm);
@@ -2707,11 +2709,12 @@ index 941c1a312824..6ad7e58f4e64 100644
  	amdgpu_dm_hpd_init(adev);
  
  	r = dm_oem_i2c_hw_init(adev);
-@@ -3309,7 +3355,19 @@ static int dm_hw_fini(struct amdgpu_ip_block *ip_block)
+@@ -3309,7 +3357,20 @@ static int dm_hw_fini(struct amdgpu_ip_block *ip_block)
  {
  	struct amdgpu_device *adev = ip_block->adev;
  
 +#ifdef CONFIG_X86_PS5
++	hdmi_set_unplug_handler(NULL, NULL);
 +	hdmi_set_hotplug_handler(NULL, NULL);
 +	cancel_delayed_work_sync(&adev->dm.ps5_hotplug_work);
 +	cancel_delayed_work_sync(&adev->dm.ps5_hdmi_resetup_work);
@@ -2727,7 +2730,7 @@ index 941c1a312824..6ad7e58f4e64 100644
  
  	amdgpu_dm_irq_fini(adev);
  	amdgpu_dm_fini(adev);
-@@ -3490,6 +3548,10 @@ static int dm_suspend(struct amdgpu_ip_block *ip_block)
+@@ -3490,6 +3551,10 @@ static int dm_suspend(struct amdgpu_ip_block *ip_block)
  	struct amdgpu_device *adev = ip_block->adev;
  	struct amdgpu_display_manager *dm = &adev->dm;
  
@@ -2738,7 +2741,7 @@ index 941c1a312824..6ad7e58f4e64 100644
  	if (amdgpu_in_reset(adev)) {
  		enum dc_status res;
  
-@@ -3524,8 +3586,12 @@ static int dm_suspend(struct amdgpu_ip_block *ip_block)
+@@ -3524,8 +3589,12 @@ static int dm_suspend(struct amdgpu_ip_block *ip_block)
  	if (!adev->dm.cached_state) {
  		int r = dm_cache_state(adev);
  
@@ -2752,7 +2755,7 @@ index 941c1a312824..6ad7e58f4e64 100644
  	}
  
  	s3_handle_hdmi_cec(adev_to_drm(adev), true);
-@@ -3787,6 +3853,9 @@ static int dm_resume(struct amdgpu_ip_block *ip_block)
+@@ -3787,6 +3856,9 @@ static int dm_resume(struct amdgpu_ip_block *ip_block)
  	int i, r, j;
  	struct dc_commit_streams_params commit_params = {};
  
@@ -2762,7 +2765,7 @@ index 941c1a312824..6ad7e58f4e64 100644
  	if (dm->dc->caps.ips_support) {
  		if (!amdgpu_in_reset(adev))
  			mutex_lock(&dm->dc_lock);
-@@ -3864,6 +3933,9 @@ static int dm_resume(struct amdgpu_ip_block *ip_block)
+@@ -3864,6 +3936,9 @@ static int dm_resume(struct amdgpu_ip_block *ip_block)
  
  		mutex_unlock(&dm->dc_lock);
  
@@ -2772,7 +2775,7 @@ index 941c1a312824..6ad7e58f4e64 100644
  		/* set the backlight after a reset */
  		for (i = 0; i < dm->num_of_edps; i++) {
  			if (dm->backlight_dev[i])
-@@ -3994,6 +4066,9 @@ static int dm_resume(struct amdgpu_ip_block *ip_block)
+@@ -3994,6 +4069,9 @@ static int dm_resume(struct amdgpu_ip_block *ip_block)
  
  	amdgpu_dm_smu_write_watermarks_table(adev);
  
@@ -2782,7 +2785,7 @@ index 941c1a312824..6ad7e58f4e64 100644
  	drm_kms_helper_hotplug_event(ddev);
  
  	return 0;
-@@ -4523,10 +4598,255 @@ static void handle_hpd_irq_helper(struct amdgpu_dm_connector *aconnector)
+@@ -4523,10 +4601,259 @@ static void handle_hpd_irq_helper(struct amdgpu_dm_connector *aconnector)
  	}
  }
  
@@ -2881,8 +2884,12 @@ index 941c1a312824..6ad7e58f4e64 100644
 +	if (active != dm->ps5_usbc_detected_active || rescan ||
 +	    (active && !aconnector->dc_sink &&
 +				link->type != dc_connection_mst_branch)) {
++		bool was_active = dm->ps5_usbc_detected_active;
++
 +		handle_hpd_irq_helper(aconnector);
-+		dm->ps5_usbc_detected_active = active;
++		WRITE_ONCE(dm->ps5_usbc_detected_active, active);
++		if (active != was_active && !ps5_hdmi_sink_present())
++			drm_kms_helper_hotplug_event(aconnector->base.dev);
 +		if (active && link->local_sink)
 +			drm_dbg_kms(aconnector->base.dev,
 +				    "PS5 USB-C AUX index=%u: DPCD rev=%#x EDID bytes=%u monitor=%s\n",
@@ -3038,7 +3045,7 @@ index 941c1a312824..6ad7e58f4e64 100644
  	handle_hpd_irq_helper(aconnector);
  
  }
-@@ -4567,6 +4887,10 @@ static void handle_hpd_rx_irq(void *param)
+@@ -4567,6 +4894,10 @@ static void handle_hpd_rx_irq(void *param)
  	struct hpd_rx_irq_offload_work_queue *offload_wq = &adev->dm.hpd_rx_offload_wq[idx];
  	struct dc *dc = aconnector->dc_link->ctx->dc;
  
@@ -3049,7 +3056,7 @@ index 941c1a312824..6ad7e58f4e64 100644
  	memset(&hpd_irq_data, 0, sizeof(hpd_irq_data));
  
  	if (adev->dm.disable_hpd_irq)
-@@ -4723,6 +5047,10 @@ static int register_hpd_handlers(struct amdgpu_device *adev)
+@@ -4723,6 +5054,10 @@ static int register_hpd_handlers(struct amdgpu_device *adev)
  
  		aconnector = to_amdgpu_dm_connector(connector);
  		dc_link = aconnector->dc_link;
@@ -3060,7 +3067,7 @@ index 941c1a312824..6ad7e58f4e64 100644
  
  		if (dc_link->irq_source_hpd != DC_IRQ_SOURCE_INVALID) {
  			int_params.int_context = INTERRUPT_LOW_IRQ_CONTEXT;
-@@ -5715,6 +6043,10 @@ static int amdgpu_dm_initialize_drm_device(struct amdgpu_device *adev)
+@@ -5715,6 +6050,10 @@ static int amdgpu_dm_initialize_drm_device(struct amdgpu_device *adev)
  	bool psr_feature_enabled = false;
  	bool replay_feature_enabled = false;
  	int max_overlay = dm->dc->caps.max_slave_planes;
@@ -3071,7 +3078,7 @@ index 941c1a312824..6ad7e58f4e64 100644
  
  	dm->display_indexes_num = dm->dc->caps.max_streams;
  	/* Update the actual used number of crtc */
-@@ -5866,6 +6198,22 @@ static int amdgpu_dm_initialize_drm_device(struct amdgpu_device *adev)
+@@ -5866,6 +6205,22 @@ static int amdgpu_dm_initialize_drm_device(struct amdgpu_device *adev)
  	}
  
  	/* loops over all connectors on the board */
@@ -3094,7 +3101,7 @@ index 941c1a312824..6ad7e58f4e64 100644
  	for (i = 0; i < link_cnt; i++) {
  		struct dc_link *link = NULL;
  
-@@ -5913,6 +6261,10 @@ static int amdgpu_dm_initialize_drm_device(struct amdgpu_device *adev)
+@@ -5913,6 +6268,10 @@ static int amdgpu_dm_initialize_drm_device(struct amdgpu_device *adev)
  			dm->hpd_rx_offload_wq[aconnector->base.index].aconnector =
  				aconnector;
  
@@ -3105,7 +3112,7 @@ index 941c1a312824..6ad7e58f4e64 100644
  		if (!dc_link_detect_connection_type(link, &new_connection_type))
  			drm_err(adev_to_drm(adev), "KMS: Failed to detect connector\n");
  
-@@ -6026,6 +6378,9 @@ static int amdgpu_dm_initialize_drm_device(struct amdgpu_device *adev)
+@@ -6026,6 +6385,9 @@ static int amdgpu_dm_initialize_drm_device(struct amdgpu_device *adev)
  
  	return 0;
  fail:
@@ -3115,7 +3122,7 @@ index 941c1a312824..6ad7e58f4e64 100644
  	kfree(aencoder);
  	kfree(aconnector);
  
-@@ -6905,6 +7260,22 @@ get_output_color_space(const struct dc_crtc_timing *dc_crtc_timing,
+@@ -6905,6 +7267,22 @@ get_output_color_space(const struct dc_crtc_timing *dc_crtc_timing,
  		break;
  	}
  
@@ -3138,7 +3145,7 @@ index 941c1a312824..6ad7e58f4e64 100644
  	return color_space;
  }
  
-@@ -6963,6 +7334,134 @@ static bool adjust_colour_depth_from_display_info(
+@@ -6963,6 +7341,134 @@ static bool adjust_colour_depth_from_display_info(
  	return false;
  }
  
@@ -3273,7 +3280,7 @@ index 941c1a312824..6ad7e58f4e64 100644
  static void fill_stream_properties_from_drm_display_mode(
  	struct dc_stream_state *stream,
  	const struct drm_display_mode *mode_in,
-@@ -7087,8 +7586,32 @@ static void fill_stream_properties_from_drm_display_mode(
+@@ -7087,8 +7593,32 @@ static void fill_stream_properties_from_drm_display_mode(
  		}
  	}
  
@@ -3306,7 +3313,35 @@ index 941c1a312824..6ad7e58f4e64 100644
  }
  
  static void fill_audio_info(struct audio_info *audio_info,
-@@ -8122,6 +8645,9 @@ static void amdgpu_dm_connector_destroy(struct drm_connector *connector)
+@@ -7846,6 +8376,15 @@ amdgpu_dm_connector_poll(struct amdgpu_dm_connector *aconnector, bool force)
+ 	return status;
+ }
+ 
++#ifdef CONFIG_X86_PS5
++/* Hide the empty HDMI bridge while USB-C is active. */
++static bool dm_ps5_hdmi_phantom(struct amdgpu_display_manager *dm)
++{
++	return dm->ps5_usbc_connector && READ_ONCE(dm->ps5_usbc_detected_active) &&
++	       !ps5_hdmi_sink_present();
++}
++#endif
++
+ /**
+  * amdgpu_dm_connector_detect() - Detect whether a DRM connector is connected to a display
+  *
+@@ -7889,6 +8428,11 @@ amdgpu_dm_connector_detect(struct drm_connector *connector, bool force)
+ 		(!aconnector->dc_sink || aconnector->dc_sink->edid_caps.analog))
+ 		return amdgpu_dm_connector_poll(aconnector, force);
+ 
++#ifdef CONFIG_X86_PS5
++	if (dm_ps5_is_hdmi_connector(connector) &&
++	    dm_ps5_hdmi_phantom(&drm_to_adev(connector->dev)->dm))
++		return connector_status_disconnected;
++#endif
+ 	return (aconnector->dc_sink ? connector_status_connected :
+ 			connector_status_disconnected);
+ }
+@@ -8122,6 +8666,9 @@ static void amdgpu_dm_connector_destroy(struct drm_connector *connector)
  	struct amdgpu_device *adev = drm_to_adev(connector->dev);
  	struct amdgpu_display_manager *dm = &adev->dm;
  
@@ -3316,7 +3351,7 @@ index 941c1a312824..6ad7e58f4e64 100644
  	/*
  	 * Call only if mst_mgr was initialized before since it's not done
  	 * for all connector types.
-@@ -8163,8 +8689,12 @@ void amdgpu_dm_connector_funcs_reset(struct drm_connector *connector)
+@@ -8163,8 +8710,12 @@ void amdgpu_dm_connector_funcs_reset(struct drm_connector *connector)
  	struct dm_connector_state *state =
  		to_dm_connector_state(connector->state);
  
@@ -3330,7 +3365,7 @@ index 941c1a312824..6ad7e58f4e64 100644
  
  	kfree(state);
  
-@@ -8203,6 +8733,11 @@ amdgpu_dm_connector_atomic_duplicate_state(struct drm_connector *connector)
+@@ -8203,6 +8754,11 @@ amdgpu_dm_connector_atomic_duplicate_state(struct drm_connector *connector)
  		return NULL;
  
  	__drm_atomic_helper_connector_duplicate_state(connector, &new_state->base);
@@ -3342,7 +3377,7 @@ index 941c1a312824..6ad7e58f4e64 100644
  
  	new_state->freesync_capable = state->freesync_capable;
  	new_state->abm_level = state->abm_level;
-@@ -8215,6 +8750,15 @@ amdgpu_dm_connector_atomic_duplicate_state(struct drm_connector *connector)
+@@ -8215,6 +8771,15 @@ amdgpu_dm_connector_atomic_duplicate_state(struct drm_connector *connector)
  	return &new_state->base;
  }
  
@@ -3358,7 +3393,7 @@ index 941c1a312824..6ad7e58f4e64 100644
  static int
  amdgpu_dm_connector_late_register(struct drm_connector *connector)
  {
-@@ -8289,7 +8833,7 @@ static const struct drm_connector_funcs amdgpu_dm_connector_funcs = {
+@@ -8289,7 +8854,7 @@ static const struct drm_connector_funcs amdgpu_dm_connector_funcs = {
  	.fill_modes = drm_helper_probe_single_connector_modes,
  	.destroy = amdgpu_dm_connector_destroy,
  	.atomic_duplicate_state = amdgpu_dm_connector_atomic_duplicate_state,
@@ -3367,7 +3402,7 @@ index 941c1a312824..6ad7e58f4e64 100644
  	.atomic_set_property = amdgpu_dm_connector_atomic_set_property,
  	.atomic_get_property = amdgpu_dm_connector_atomic_get_property,
  	.late_register = amdgpu_dm_connector_late_register,
-@@ -8462,6 +9006,27 @@ create_validate_stream_for_sink(struct drm_connector *connector,
+@@ -8462,6 +9027,27 @@ create_validate_stream_for_sink(struct drm_connector *connector,
  			break;
  		}
  
@@ -3395,7 +3430,7 @@ index 941c1a312824..6ad7e58f4e64 100644
  		dc_result = dc_validate_stream(adev->dm.dc, stream);
  
  		if (!aconnector) /* writeback connector */
-@@ -8542,6 +9107,13 @@ enum drm_mode_status amdgpu_dm_connector_mode_valid(struct drm_connector *connec
+@@ -8542,6 +9128,13 @@ enum drm_mode_status amdgpu_dm_connector_mode_valid(struct drm_connector *connec
  	 */
  	struct amdgpu_dm_connector *aconnector = to_amdgpu_dm_connector(connector);
  
@@ -3409,7 +3444,7 @@ index 941c1a312824..6ad7e58f4e64 100644
  	if ((mode->flags & DRM_MODE_FLAG_INTERLACE) ||
  			(mode->flags & DRM_MODE_FLAG_DBLSCAN))
  		return result;
-@@ -8641,6 +9213,28 @@ static int fill_hdr_info_packet(const struct drm_connector_state *state,
+@@ -8641,6 +9234,28 @@ static int fill_hdr_info_packet(const struct drm_connector_state *state,
  	return 0;
  }
  
@@ -3438,7 +3473,7 @@ index 941c1a312824..6ad7e58f4e64 100644
  static int
  amdgpu_dm_connector_atomic_check(struct drm_connector *conn,
  				 struct drm_atomic_commit *state)
-@@ -8668,6 +9262,30 @@ amdgpu_dm_connector_atomic_check(struct drm_connector *conn,
+@@ -8668,6 +9283,30 @@ amdgpu_dm_connector_atomic_check(struct drm_connector *conn,
  	if (!crtc)
  		return 0;
  
@@ -3469,7 +3504,7 @@ index 941c1a312824..6ad7e58f4e64 100644
  	if (new_con_state->privacy_screen_sw_state != old_con_state->privacy_screen_sw_state) {
  		new_crtc_state = drm_atomic_get_crtc_state(state, crtc);
  		if (IS_ERR(new_crtc_state))
-@@ -8689,7 +9307,11 @@ amdgpu_dm_connector_atomic_check(struct drm_connector *conn,
+@@ -8689,7 +9328,11 @@ amdgpu_dm_connector_atomic_check(struct drm_connector *conn,
  		if (IS_ERR(new_crtc_state))
  			return PTR_ERR(new_crtc_state);
  
@@ -3482,7 +3517,7 @@ index 941c1a312824..6ad7e58f4e64 100644
  	}
  
  	if (!drm_connector_atomic_hdr_metadata_equal(old_con_state, new_con_state)) {
-@@ -8719,6 +9341,17 @@ amdgpu_dm_connector_atomic_check(struct drm_connector *conn,
+@@ -8719,6 +9362,17 @@ amdgpu_dm_connector_atomic_check(struct drm_connector *conn,
  			!new_con_state->hdr_output_metadata;
  	}
  
@@ -3500,7 +3535,7 @@ index 941c1a312824..6ad7e58f4e64 100644
  	return 0;
  }
  
-@@ -9256,6 +9889,49 @@ static void amdgpu_dm_connector_add_freesync_modes(struct drm_connector *connect
+@@ -9256,6 +9910,49 @@ static void amdgpu_dm_connector_add_freesync_modes(struct drm_connector *connect
  			add_fs_modes(amdgpu_dm_connector);
  }
  
@@ -3550,7 +3585,7 @@ index 941c1a312824..6ad7e58f4e64 100644
  static int amdgpu_dm_connector_get_modes(struct drm_connector *connector)
  {
  	struct amdgpu_dm_connector *amdgpu_dm_connector =
-@@ -9290,6 +9966,10 @@ static int amdgpu_dm_connector_get_modes(struct drm_connector *connector)
+@@ -9290,6 +9987,10 @@ static int amdgpu_dm_connector_get_modes(struct drm_connector *connector)
  		if (encoder)
  			amdgpu_dm_connector_add_common_modes(encoder, connector);
  		amdgpu_dm_connector_add_freesync_modes(connector, drm_edid);
@@ -3561,7 +3596,7 @@ index 941c1a312824..6ad7e58f4e64 100644
  	}
  	amdgpu_dm_fbc_init(connector);
  
-@@ -9403,6 +10083,12 @@ void amdgpu_dm_connector_init_helper(struct amdgpu_display_manager *dm,
+@@ -9403,6 +10104,12 @@ void amdgpu_dm_connector_init_helper(struct amdgpu_display_manager *dm,
  		/* Content Type is currently only implemented for HDMI. */
  		drm_connector_attach_content_type_property(&aconnector->base);
  	}
@@ -3574,7 +3609,7 @@ index 941c1a312824..6ad7e58f4e64 100644
  
  	if (connector_type == DRM_MODE_CONNECTOR_HDMIA) {
  		if (!drm_mode_create_hdmi_colorspace_property(&aconnector->base, supported_colorspaces))
-@@ -11462,6 +12148,106 @@ static int amdgpu_dm_atomic_setup_commit(struct drm_atomic_commit *state)
+@@ -11462,6 +12169,106 @@ static int amdgpu_dm_atomic_setup_commit(struct drm_atomic_commit *state)
  	return 0;
  }
  
@@ -3681,7 +3716,7 @@ index 941c1a312824..6ad7e58f4e64 100644
  /**
   * amdgpu_dm_atomic_commit_tail() - AMDgpu DM's commit tail implementation.
   * @state: The atomic state to commit
-@@ -11492,12 +12278,98 @@ static void amdgpu_dm_atomic_commit_tail(struct drm_atomic_commit *state)
+@@ -11492,12 +12299,98 @@ static void amdgpu_dm_atomic_commit_tail(struct drm_atomic_commit *state)
  	drm_atomic_helper_update_legacy_modeset_state(dev, state);
  	drm_dp_mst_atomic_wait_for_dependencies(state);
  
@@ -3780,7 +3815,7 @@ index 941c1a312824..6ad7e58f4e64 100644
  	amdgpu_dm_update_hdcp(state);
  
  	/* Handle connector state changes */
-@@ -11525,6 +12397,15 @@ static void amdgpu_dm_atomic_commit_tail(struct drm_atomic_commit *state)
+@@ -11525,6 +12418,15 @@ static void amdgpu_dm_atomic_commit_tail(struct drm_atomic_commit *state)
  		dm_new_crtc_state = to_dm_crtc_state(new_crtc_state);
  		dm_old_crtc_state = to_dm_crtc_state(old_crtc_state);
  
@@ -3796,7 +3831,7 @@ index 941c1a312824..6ad7e58f4e64 100644
  		scaling_changed = is_scaling_state_different(dm_new_con_state,
  							     dm_old_con_state);
  
-@@ -11556,6 +12437,12 @@ static void amdgpu_dm_atomic_commit_tail(struct drm_atomic_commit *state)
+@@ -11556,6 +12458,12 @@ static void amdgpu_dm_atomic_commit_tail(struct drm_atomic_commit *state)
  				= get_output_color_space(&dm_new_crtc_state->stream->timing, new_con_state);
  
  			stream_update.output_color_space = &dm_new_crtc_state->stream->output_color_space;
@@ -3809,7 +3844,7 @@ index 941c1a312824..6ad7e58f4e64 100644
  		}
  
  		if (abm_changed) {
-@@ -11567,6 +12454,9 @@ static void amdgpu_dm_atomic_commit_tail(struct drm_atomic_commit *state)
+@@ -11567,6 +12475,9 @@ static void amdgpu_dm_atomic_commit_tail(struct drm_atomic_commit *state)
  		if (hdr_changed) {
  			fill_hdr_info_packet(new_con_state, &hdr_packet);
  			stream_update.hdr_static_metadata = &hdr_packet;
@@ -3819,7 +3854,7 @@ index 941c1a312824..6ad7e58f4e64 100644
  		}
  
  		status = dc_stream_get_status(dm_new_crtc_state->stream);
-@@ -11871,6 +12761,110 @@ void dm_restore_drm_connector_state(struct drm_device *dev,
+@@ -11871,6 +12782,118 @@ void dm_restore_drm_connector_state(struct drm_device *dev,
  		dm_force_atomic_commit(&aconnector->base);
  }
  
@@ -3895,6 +3930,14 @@ index 941c1a312824..6ad7e58f4e64 100644
 +	queue_delayed_work(system_dfl_wq, &dm->ps5_hotplug_work, msecs_to_jiffies(delay));
 +}
 +
++static void dm_ps5_unplug_handler(void *data)
++{
++	struct amdgpu_display_manager *dm = data;
++
++	if (dm_ps5_hdmi_phantom(dm))
++		drm_kms_helper_hotplug_event(adev_to_drm(dm->adev));
++}
++
 +static void dm_ps5_hdmi_resetup_work_func(struct work_struct *work)
 +{
 +	struct amdgpu_display_manager *dm =
@@ -3930,7 +3973,7 @@ index 941c1a312824..6ad7e58f4e64 100644
  /*
   * Grabs all modesetting locks to serialize against any blocking commits,
   * Waits for completion of all non blocking commits.
-@@ -12091,6 +13085,30 @@ static int dm_update_crtc_state(struct amdgpu_display_manager *dm,
+@@ -12091,6 +13114,30 @@ static int dm_update_crtc_state(struct amdgpu_display_manager *dm,
  			goto fail;
  		}
  
@@ -10016,10 +10059,10 @@ index 000000000000..80953514df04
 +EXPORT_SYMBOL(ps5_gpufreq_register);
 diff --git a/drivers/ps5/hdmi.c b/drivers/ps5/hdmi.c
 new file mode 100755
-index 000000000000..4ade01ba653e
+index e69de29bb2d1..1a382ae1fb48 100644
 --- /dev/null
 +++ b/drivers/ps5/hdmi.c
-@@ -0,0 +1,2419 @@
+@@ -0,0 +1,2447 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +
 +#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -12296,6 +12339,33 @@ index 000000000000..4ade01ba653e
 +	mutex_unlock(&hotplug_lock);
 +}
 +
++static void (*unplug_handler)(void *data);
++static void *unplug_data;
++
++void hdmi_set_unplug_handler(void (*handler)(void *data), void *data)
++{
++	mutex_lock(&hotplug_lock);
++	unplug_handler = handler;
++	unplug_data = data;
++	mutex_unlock(&hotplug_lock);
++}
++EXPORT_SYMBOL(hdmi_set_unplug_handler);
++
++/* Track the display behind the bridge. */
++bool ps5_hdmi_sink_present(void)
++{
++	return READ_ONCE(frl_edid_valid);
++}
++EXPORT_SYMBOL(ps5_hdmi_sink_present);
++
++static void hdmi_request_unplug(void)
++{
++	mutex_lock(&hotplug_lock);
++	if (unplug_handler)
++		unplug_handler(unplug_data);
++	mutex_unlock(&hotplug_lock);
++}
++
 +static DEFINE_MUTEX(cec_lock);
 +static void (*cec_handler)(void *data, const struct icc_msg *msg);
 +static void *cec_data;
@@ -12338,6 +12408,7 @@ index 000000000000..4ade01ba653e
 +		mutex_unlock(&frl_state_lock);
 +		last_edid_size = 0;
 +		WRITE_ONCE(hdcp_abort_until, jiffies);
++		hdmi_request_unplug();
 +	}
 +
 +	/* Event 4: HDCP failed after the start and the IC muted the video. */
@@ -16334,12 +16405,11 @@ index 000000000000..7e933c30fc3e
 +MODULE_LICENSE("GPL");
 diff --git a/drivers/ps5/usbc_dp.c b/drivers/ps5/usbc_dp.c
 new file mode 100644
-index 000000000000..1c1b1770887f
+index e69de29bb2d1..50cd924d8910 100644
 --- /dev/null
 +++ b/drivers/ps5/usbc_dp.c
-@@ -0,0 +1,303 @@
+@@ -0,0 +1,742 @@
 +// SPDX-License-Identifier: GPL-2.0-only
-+/* PS5 USB-C DisplayPort policy. The port controller owns PD negotiation and the mux. */
 +
 +#define pr_fmt(fmt) "ps5-usbc: " fmt
 +
@@ -16348,7 +16418,18 @@ index 000000000000..1c1b1770887f
 +#include <linux/notifier.h>
 +#include <linux/ps5.h>
 +#include <linux/slab.h>
++#include <linux/spinlock.h>
++#include <linux/blkdev.h>
++#include <linux/fs_struct.h>
++#include <linux/mount.h>
++#include <linux/pid.h>
++#include <linux/pid_namespace.h>
++#include <linux/sched/task.h>
++
 +#include <linux/unaligned.h>
++#include <linux/sysfs.h>
++#include <linux/usb.h>
++#include <linux/workqueue.h>
 +#include <drm/display/drm_dp.h>
 +
 +#define PS5_USBC_PORT 0
@@ -16359,15 +16440,9 @@ index 000000000000..1c1b1770887f
 +#define USBC_SET_SUPPORTED_DEVICES 0x19
 +#define USBC_MODE_NORMAL 5
 +
-+/* Prepare the FAT port before attachment can negotiate DP and assert HPD.
-+ * AMDGPU calls this policy only after selecting a unique USB-C/HDMI route;
-+ * real HPD and DRM detection/modesetting still control the video stream.
-+ * Off by default: reprogramming the controller re-attaches the port, which
-+ * resets any USB device on it, such as a boot drive. enable=1 opts in.
-+ */
-+static bool enable;
-+module_param(enable, bool, 0444);
-+MODULE_PARM_DESC(enable, "Prepare FAT USB-C DP policy: supported-device RAM table and NORMAL mode (default: off; enabling it resets any USB device on the port)");
++static int enable = -1;
++module_param(enable, int, 0444);
++MODULE_PARM_DESC(enable, "USB-C DisplayPort: -1 auto, when a display appears (default); 0 off; 1 at boot (resets any USB device on the port)");
 +
 +static unsigned int dp_lanes = 4;
 +module_param(dp_lanes, uint, 0444);
@@ -16380,6 +16455,46 @@ index 000000000000..1c1b1770887f
 +static bool probe_without_hpd;
 +module_param(probe_without_hpd, bool, 0444);
 +MODULE_PARM_DESC(probe_without_hpd, "Probe native AUX with low HPD; connect only after a valid DPCD reply (default: off)");
++
++static char *extra_device;
++module_param(extra_device, charp, 0444);
++MODULE_PARM_DESC(extra_device, "Extra DP partners for the supported-device table, from their USB-PD identity: up to 5 comma-separated VID:PID or VID:PIDMIN-PIDMAX in hex (default: none)");
++
++static unsigned int extra_flags;
++module_param(extra_flags, uint, 0444);
++MODULE_PARM_DESC(extra_flags, "Table flags for extra_device: bit 0 PDOnly, bit 1 Caesar (default: 0)");
++
++static bool learn;
++module_param(learn, bool, 0644);
++MODULE_PARM_DESC(learn, "Add the vendor of a USB Billboard device that reports DisplayPort not configured to the table (default: off)");
++
++static char *probe_vendors = "2109,0bda,04b4,0451,048d,0424,1fc9,1f29";
++module_param(probe_vendors, charp, 0444);
++MODULE_PARM_DESC(probe_vendors, "USB-C PD chip vendors tried after the display's own USB vendors, comma-separated hex (default: VIA, Realtek, Cypress, TI, ITE, Microchip, NXP, Analogix)");
++
++static DEFINE_MUTEX(usbc_lock);
++static u16 learned_vid[5];
++static int learned_count;
++
++static u16 trial_vid[5];
++static int trial_count;
++
++static int learned_get(char *buf, const struct kernel_param *kp)
++{
++	int i, n = 0;
++
++	mutex_lock(&usbc_lock);
++	for (i = 0; i < learned_count; i++)
++		n += sysfs_emit_at(buf, n, "%s%04x:0000-ffff", i ? "," : "", learned_vid[i]);
++	mutex_unlock(&usbc_lock);
++	return n + sysfs_emit_at(buf, n, "\n");
++}
++
++static const struct kernel_param_ops learned_ops = {
++	.get = learned_get,
++};
++module_param_cb(learned, &learned_ops, NULL, 0444);
++MODULE_PARM_DESC(learned, "Display vendors found this boot, in extra_device format (read only)");
 +
 +static u8 saved_mode;
 +static bool saved_mode_valid;
@@ -16425,8 +16540,8 @@ index 000000000000..1c1b1770887f
 +static int checked_query_data(u8 service, u16 command, const u8 *data,
 +			      size_t data_size, size_t reply_size, u8 *payload)
 +{
-+	/* The three supported-device records need 32 payload + 12 header bytes. */
-+	u8 query[44] = {};
++	/* Eight records plus the ICC header. */
++	u8 query[94] = {};
 +	struct icc_msg *request = (struct icc_msg *)query;
 +	u8 *buffer;
 +	struct icc_msg *msg;
@@ -16444,7 +16559,7 @@ index 000000000000..1c1b1770887f
 +				    sizeof(*request) + data_size);
 +	memcpy(request->data, data, data_size);
 +
-+	/* Separate storage preserves the transaction ID assigned by icc_send(). */
++	/* Preserve the request transaction ID. */
 +	ret = icc_query(query, buffer);
 +	if (!ret)
 +		ret = check_reply(msg, request, reply_size);
@@ -16463,30 +16578,99 @@ index 000000000000..1c1b1770887f
 +				  reply_size, payload);
 +}
 +
++#define USBC_DEVICE_RECORD_SIZE 10
++
++#define USBC_MAX_EXTRA_DEVICES 5
++
++static int usbc_parse_extra_devices(u8 *records)
++{
++	const char *p = extra_device;
++	int count = 0;
++
++	if (!p || !*p)
++		return 0;
++	if (extra_flags > 3)
++		goto invalid;
++	while (*p) {
++		u16 vid, pid_min, pid_max;
++		int fields, end = 0;
++		u8 *record = records + count * USBC_DEVICE_RECORD_SIZE;
++
++		if (count == USBC_MAX_EXTRA_DEVICES)
++			goto invalid;
++
++		fields = sscanf(p, "%hx:%hx%n-%hx%n", &vid, &pid_min, &end, &pid_max, &end);
++		if (fields == 2)
++			pid_max = pid_min;
++		if ((fields != 2 && fields != 3) || pid_min > pid_max ||
++		    (p[end] && p[end] != ','))
++			goto invalid;
++		put_unaligned_le16(vid, record);
++		put_unaligned_le16(pid_min, record + 2);
++		put_unaligned_le16(pid_max, record + 4);
++		put_unaligned_le32(extra_flags, record + 6);
++		count++;
++		p += end;
++		if (*p == ',' && !*++p)
++			goto invalid;
++	}
++	return count;
++invalid:
++	pr_warn("ignoring invalid extra_device \"%s\" (flags %u)\n",
++		extra_device, extra_flags);
++	return 0;
++}
++
++static int usbc_send_supported_devices(const u8 *table)
++{
++	return checked_query_data(ICC_SERVICE_ID_USBC, USBC_SET_SUPPORTED_DEVICES, table,
++				  2 + table[1] * USBC_DEVICE_RECORD_SIZE, 0, NULL);
++}
++
 +static int usbc_set_supported_devices(void)
 +{
-+	/* ICC 0x19 replaces the RAM table, so retain both original firmware entries.
-+	 * Wire records are LE16 VID, LE16 PID min/max, LE32 flags (10 bytes).
-+	 * flags bit 0 = PDOnly, bit 1 = Caesar. Genesys identifies the tested
-+	 * USB-C/DP cable candidate; its exact PD PID has not been captured.
-+	 * No NVS write is performed. A fresh Type-C attachment may be needed
-+	 * if PDCON already negotiated USB before this policy was installed.
-+	 */
 +	static const u8 devices[] = {
 +		PS5_USBC_PORT, 3,
 +		0x4c, 0x05, 0xde, 0x0c, 0xde, 0x0c, 0x02, 0, 0, 0,
 +		0x4c, 0x05, 0x6b, 0x0d, 0x75, 0x0d, 0, 0, 0, 0,
 +		0xe3, 0x05, 0, 0, 0xff, 0xff, 0, 0, 0, 0,
 +	};
-+	int ret;
++	u8 table[sizeof(devices) + USBC_MAX_EXTRA_DEVICES * USBC_DEVICE_RECORD_SIZE];
++	int extra, ret, i;
 +
 +	BUILD_BUG_ON(sizeof(struct icc_msg) != 12);
 +	BUILD_BUG_ON(sizeof(devices) != 32);
-+	ret = checked_query_data(ICC_SERVICE_ID_USBC,
-+				 USBC_SET_SUPPORTED_DEVICES, devices,
-+				 sizeof(devices), 0, NULL);
++	extra = usbc_parse_extra_devices(table + sizeof(devices));
++	for (i = 0; i < learned_count + trial_count && extra < USBC_MAX_EXTRA_DEVICES;
++	     i++, extra++) {
++		u8 *record = table + sizeof(devices) + extra * USBC_DEVICE_RECORD_SIZE;
++
++		put_unaligned_le16(i < learned_count ? learned_vid[i] :
++				   trial_vid[i - learned_count],
++				   record);
++		put_unaligned_le16(0, record + 2);
++		put_unaligned_le16(0xffff, record + 4);
++		put_unaligned_le32(0, record + 6);
++	}
++	if (!extra) {
++		ret = usbc_send_supported_devices(devices);
++		if (!ret)
++			pr_debug("supported-device table applied\n");
++		return ret;
++	}
++
++	memcpy(table, devices, sizeof(devices));
++	table[1] = 3 + extra;
++	ret = usbc_send_supported_devices(table);
++	if (!ret) {
++		pr_debug("supported-device table applied with extra_device %s, %d learned\n",
++			 extra_device ? extra_device : "", learned_count);
++		return 0;
++	}
++	pr_warn("extra_device table rejected (%d); using the original table\n", ret);
++	ret = usbc_send_supported_devices(devices);
 +	if (!ret)
-+		pr_info("USB-C controller accepted supported-device RAM policy\n");
++		pr_debug("supported-device table applied\n");
 +	return ret;
 +}
 +
@@ -16498,7 +16682,7 @@ index 000000000000..1c1b1770887f
 +
 +bool ps5_usbc_dp_enabled(void)
 +{
-+	return enable;
++	return enable != 0;
 +}
 +EXPORT_SYMBOL_GPL(ps5_usbc_dp_enabled);
 +
@@ -16514,7 +16698,7 @@ index 000000000000..1c1b1770887f
 +
 +	if (length != DP_RECEIVER_CAP_SIZE)
 +		return false;
-+	/* Accept known DP revisions and the 8b/10b rates supported by this GPU. */
++
 +	if (!((dpcd[DP_DPCD_REV] >= 0x10 && dpcd[DP_DPCD_REV] <= 0x14) ||
 +	      (dpcd[DP_DPCD_REV] >= 0x20 && dpcd[DP_DPCD_REV] <= 0x21)))
 +		return false;
@@ -16538,7 +16722,7 @@ index 000000000000..1c1b1770887f
 +}
 +EXPORT_SYMBOL_GPL(ps5_usbc_dp_get_mode);
 +
-+int ps5_usbc_dp_enable(void)
++static int usbc_enable_locked(void)
 +{
 +	u8 expected = pdcon_mode;
 +	u8 observed;
@@ -16551,7 +16735,7 @@ index 000000000000..1c1b1770887f
 +		return -EPROBE_DEFER;
 +	if ((dp_lanes != 2 && dp_lanes != 4) || pdcon_mode > 255)
 +		return -EINVAL;
-+	/* Save the baseline before any setter, including a failed transition. */
++
 +	if (!saved_mode_valid) {
 +		ret = ps5_usbc_dp_get_mode(&saved_mode);
 +		if (ret)
@@ -16559,37 +16743,46 @@ index 000000000000..1c1b1770887f
 +		saved_mode_valid = true;
 +	}
 +
-+	/* Install the partner policy before power/Working can negotiate DP. */
 +	ret = usbc_set_supported_devices();
 +	if (ret)
 +		return ret;
 +
-+	/* VBUS is device 2, as in the supplied controller bring-up sequence. */
 +	ret = checked_query(ICC_SERVICE_ID_DEVICE, 0, 2, 1, 0, NULL);
 +	if (ret)
 +		return ret;
 +	ret = usbc_query(USBC_NOTIFY_SOC_WORKING, 0, 0, NULL);
 +	if (ret)
 +		return ret;
-+	/* Keep the supplied firmware sequence's SOC notification settling delay. */
++	/* Firmware settling delay. */
 +	msleep(200);
 +
 +	ret = usbc_query(USBC_SET_PDCON_OP_MODE, expected, 0, NULL);
 +	if (ret)
 +		return ret;
-+	/* A successful setter reply does not mean the transition has completed. */
++
 +	for (attempt = 0; attempt < 40; attempt++) {
 +		ret = ps5_usbc_dp_get_mode(&observed);
 +		if (ret)
 +			return ret;
 +		if (observed == expected) {
-+			pr_info("USB-C controller mode %u confirmed; native HPD/AUX must still be verified\n",
-+				observed);
++			pr_debug("controller mode %u\n", observed);
 +			return 0;
 +		}
 +		msleep(50);
 +	}
 +	return -ETIMEDOUT;
++}
++
++int ps5_usbc_dp_enable(void)
++{
++	int ret = 0;
++
++	mutex_lock(&usbc_lock);
++
++	if (enable > 0 || learned_count)
++		ret = usbc_enable_locked();
++	mutex_unlock(&usbc_lock);
++	return ret;
 +}
 +EXPORT_SYMBOL_GPL(ps5_usbc_dp_enable);
 +
@@ -16597,26 +16790,42 @@ index 000000000000..1c1b1770887f
 +{
 +	int ret;
 +
-+	if (!enable || !saved_mode_valid || !spcie_is_initialized())
++	if (!enable || !spcie_is_initialized())
 +		return;
-+	ret = usbc_query(USBC_SET_PDCON_OP_MODE, saved_mode, 0, NULL);
-+	if (ret)
-+		pr_warn("failed to restore USB-C controller mode %u: %d\n", saved_mode, ret);
-+	else
-+		saved_mode_valid = false;
++	mutex_lock(&usbc_lock);
++	if (saved_mode_valid) {
++		ret = usbc_query(USBC_SET_PDCON_OP_MODE, saved_mode, 0, NULL);
++		if (ret)
++			pr_warn("failed to restore controller mode %u: %d\n", saved_mode, ret);
++		else
++			saved_mode_valid = false;
++	}
++	mutex_unlock(&usbc_lock);
 +}
 +EXPORT_SYMBOL_GPL(ps5_usbc_dp_disable);
 +
 +int ps5_usbc_dp_get_state(struct ps5_usbc_state *state)
 +{
-+	/* The first two payload bytes are the controller result, not connection data. */
-+	return usbc_query(USBC_GET_DEV_CONN_STATE, 0, sizeof(*state), (u8 *)state);
++	static struct ps5_usbc_state last;
++	static bool last_valid;
++	int ret;
++
++	/* Skip the controller result. */
++	ret = usbc_query(USBC_GET_DEV_CONN_STATE, 0, sizeof(*state), (u8 *)state);
++	if (!ret && enable && (!last_valid || memcmp(state, &last, sizeof(last)))) {
++		pr_debug("port state: connected=%u type=%u vconn=%u power=%u mux=%u orientation=%u dp_alt=%u pin=%u hpd=%u\n",
++			 state->connected, state->device_type, state->vconn, state->power,
++			 state->mux, state->orientation, state->dp_alt, state->pin_assignment,
++			 state->hpd);
++		last = *state;
++		last_valid = true;
++	}
++	return ret;
 +}
 +EXPORT_SYMBOL_GPL(ps5_usbc_dp_get_state);
 +
 +unsigned int ps5_usbc_dp_lane_count(void)
 +{
-+	/* DC may probe before policy initialization rejects an invalid parameter. */
 +	return dp_lanes == 2 ? 2 : 4;
 +}
 +EXPORT_SYMBOL_GPL(ps5_usbc_dp_lane_count);
@@ -16635,9 +16844,310 @@ index 000000000000..1c1b1770887f
 +
 +void ps5_usbc_notification_handler(struct icc_msg *msg)
 +{
-+	/* The notification layout is firmware-specific: re-query authoritative state. */
 +	blocking_notifier_call_chain(&ps5_usbc_notifiers, 0, NULL);
 +}
++
++#define USB_CAP_TYPE_BILLBOARD	0x0d
++#define BILLBOARD_MODES		44
++#define DP_SVID			0xff01
++
++static int ps5_usbc_billboard_dp_state(const u8 *bos, unsigned int total)
++{
++	unsigned int off = bos[0];
++
++	while (off + 3 <= total) {
++		const u8 *cap = bos + off;
++		unsigned int len = cap[0], i;
++
++		if (len < 3 || off + len > total)
++			break;
++		if (cap[1] == USB_DT_DEVICE_CAPABILITY && cap[2] == USB_CAP_TYPE_BILLBOARD &&
++		    len >= BILLBOARD_MODES) {
++			for (i = 0; i < cap[4] && i < 32 * 4 &&
++			     BILLBOARD_MODES + 4 * (i + 1) <= len; i++) {
++				if (get_unaligned_le16(cap + BILLBOARD_MODES + 4 * i) == DP_SVID)
++					return (cap[8 + i / 4] >> (2 * (i % 4))) & 3;
++			}
++		}
++		off += len;
++	}
++	return -1;
++}
++
++static DEFINE_SPINLOCK(usbc_pending_lock);
++static bool search_pending;
++static u16 pending_vid, pending_pid;
++static struct device *pending_host;
++
++struct usbc_storage {
++	struct device *host;
++	struct device *root;
++	bool any;
++};
++
++static int usbc_storage_on_host(struct usb_device *udev, void *data)
++{
++	struct usbc_storage *s = data;
++	int i, ret;
++
++	if (udev->bus->controller != s->host || !udev->actconfig)
++		return 0;
++	for (i = 0; i < udev->actconfig->desc.bNumInterfaces; i++) {
++		struct usb_interface *intf = udev->actconfig->interface[i];
++
++		if (!intf || intf->cur_altsetting->desc.bInterfaceClass != USB_CLASS_MASS_STORAGE)
++			continue;
++		s->any = true;
++		if (!s->root)
++			return -ENODEV;
++		ret = disk_uses_device(dev_to_disk(s->root), &udev->dev);
++		if (ret)
++			return ret;
++	}
++	return 0;
++}
++
++static struct device *usbc_root_disk(void)
++{
++	struct device *disk = NULL;
++	struct task_struct *init;
++	struct path root;
++
++	rcu_read_lock();
++	init = find_task_by_pid_ns(1, &init_pid_ns);
++	if (init)
++		get_task_struct(init);
++	rcu_read_unlock();
++	if (!init)
++		return NULL;
++	task_lock(init);
++	if (init->fs)
++		get_fs_root(init->fs, &root);
++	else
++		root.mnt = NULL;
++	task_unlock(init);
++	put_task_struct(init);
++	if (!root.mnt)
++		return NULL;
++	if (root.mnt->mnt_sb->s_bdev) {
++		disk = disk_to_dev(root.mnt->mnt_sb->s_bdev->bd_disk);
++		get_device(disk);
++	}
++	path_put(&root);
++	return disk;
++}
++
++#define USBC_MAX_CANDIDATES 24
++
++struct usbc_vendors {
++	struct device *host;
++	u16 vid[USBC_MAX_CANDIDATES];
++	int n;
++};
++
++static void usbc_add_vendor(struct usbc_vendors *c, u16 vid)
++{
++	int i;
++
++	if (!vid || vid == 0x1d6b || c->n == USBC_MAX_CANDIDATES)
++		return;
++	for (i = 0; i < learned_count; i++)
++		if (learned_vid[i] == vid)
++			return;
++	for (i = 0; i < c->n; i++)
++		if (c->vid[i] == vid)
++			return;
++	c->vid[c->n++] = vid;
++}
++
++static int usbc_vendor_on_host(struct usb_device *udev, void *data)
++{
++	struct usbc_vendors *c = data;
++
++	if (udev->bus->controller == c->host)
++		usbc_add_vendor(c, le16_to_cpu(udev->descriptor.idVendor));
++	return 0;
++}
++
++static int usbc_extra_count(void)
++{
++	u8 records[USBC_MAX_EXTRA_DEVICES * USBC_DEVICE_RECORD_SIZE];
++
++	return usbc_parse_extra_devices(records);
++}
++
++static bool usbc_dp_entered(void)
++{
++	struct ps5_usbc_state state;
++	int i;
++
++	for (i = 0; i < 16; i++) {
++		if (!usbc_query(USBC_GET_DEV_CONN_STATE, 0, sizeof(state), (u8 *)&state) &&
++		    state.dp_alt == 2)
++			return true;
++		msleep(250);
++	}
++	return false;
++}
++
++static bool usbc_try(const u16 *vid, int n)
++{
++	memcpy(trial_vid, vid, n * sizeof(*vid));
++	trial_count = n;
++	if (usbc_enable_locked())
++		return false;
++	return usbc_dp_entered();
++}
++
++static u16 searched_vid[8];
++static int searched_count;
++
++static void usbc_learn_fn(struct work_struct *work)
++{
++	struct usbc_vendors c = { .host = pending_host };
++	u16 vid = pending_vid, pid = pending_pid;
++	int room, start, k, i, ret;
++	const char *p;
++
++	mutex_lock(&usbc_lock);
++	for (i = 0; i < searched_count; i++)
++		if (searched_vid[i] == vid)
++			goto out;
++	if (searched_count < ARRAY_SIZE(searched_vid))
++		searched_vid[searched_count++] = vid;
++
++	{
++		struct usbc_storage storage = { .host = c.host, .root = usbc_root_disk() };
++
++		ret = usb_for_each_dev(&storage, usbc_storage_on_host);
++		put_device(storage.root);
++		if (ret) {
++			pr_warn("OS disk is on the port or its path is unresolved (%d); skipping DisplayPort\n",
++				ret);
++			goto out;
++		}
++		if (storage.any)
++			pr_warn("resetting USB storage on the port for DisplayPort\n");
++	}
++
++	room = USBC_MAX_EXTRA_DEVICES - usbc_extra_count() - learned_count;
++	if (room <= 0) {
++		pr_warn("no table room to find the vendor of %04x:%04x\n", vid, pid);
++		goto out;
++	}
++	if (!saved_mode_valid && (enable > 0 || !spcie_is_initialized())) {
++		learned_vid[learned_count++] = vid;
++		pr_info("learned vendor %04x; applied when the policy starts\n", vid);
++		goto out;
++	}
++
++	usbc_add_vendor(&c, vid);
++	usb_for_each_dev(&c, usbc_vendor_on_host);
++	for (p = probe_vendors; p && *p;) {
++		unsigned int v;
++		int end = 0;
++
++		if (sscanf(p, "%x%n", &v, &end) != 1 || v > 0xffff)
++			break;
++		usbc_add_vendor(&c, v);
++		p += end;
++		if (*p != ',')
++			break;
++		p++;
++	}
++
++	for (start = 0; start < c.n; start += room) {
++		k = min(room, c.n - start);
++		if (!usbc_try(c.vid + start, k))
++			continue;
++
++		while (k > 1) {
++			int half = k / 2;
++
++			if (usbc_try(c.vid + start, half)) {
++				k = half;
++			} else {
++				start += half;
++				k -= half;
++			}
++		}
++		trial_count = 0;
++		learned_vid[learned_count++] = c.vid[start];
++		ret = usbc_enable_locked();
++		if (ret || !usbc_dp_entered()) {
++			learned_count--;
++			pr_warn("failed to apply PD vendor %04x: %d\n",
++				c.vid[start], ret ? ret : -ETIMEDOUT);
++			goto restore;
++		}
++		pr_info("DisplayPort works with PD vendor %04x for %04x:%04x; to keep it, add usbc_dp.extra_device=%04x:0000-ffff\n",
++			c.vid[start], vid, pid, c.vid[start]);
++		goto out;
++	}
++	trial_count = 0;
++restore:
++	ret = usbc_enable_locked();
++	if (ret)
++		pr_warn("failed to restore partner table: %d\n", ret);
++	pr_warn("none of %d vendors starts DisplayPort for %04x:%04x; add its PD identity with usbc_dp.extra_device\n",
++		c.n, vid, pid);
++out:
++	mutex_unlock(&usbc_lock);
++	put_device(c.host);
++	spin_lock(&usbc_pending_lock);
++	pending_host = NULL;
++	search_pending = false;
++	spin_unlock(&usbc_pending_lock);
++}
++
++static DECLARE_DELAYED_WORK(usbc_learn_work, usbc_learn_fn);
++
++/* Wait for hub storage. */
++#define USBC_SETTLE_MS 5000
++
++static int usbc_usb_notify(struct notifier_block *nb, unsigned long action, void *data)
++{
++	struct usb_device *udev = data;
++	int state;
++
++	if (action != USB_DEVICE_ADD || !enable || !udev->bos)
++		return NOTIFY_DONE;
++	state = ps5_usbc_billboard_dp_state((const u8 *)udev->bos->desc,
++					    le16_to_cpu(udev->bos->desc->wTotalLength));
++	if (state < 0)
++		return NOTIFY_DONE;
++	dev_info(&udev->dev, "Billboard %04x:%04x reports DisplayPort state %d%s\n",
++		 le16_to_cpu(udev->descriptor.idVendor), le16_to_cpu(udev->descriptor.idProduct),
++		 state, state == 3 || learn || enable < 0 ? "" :
++		 " (try usbc_dp.extra_device=VID:0000-ffff or usbc_dp.learn=1)");
++	if (state != 3 && (learn || enable < 0)) {
++		spin_lock(&usbc_pending_lock);
++		if (search_pending) {
++			spin_unlock(&usbc_pending_lock);
++			return NOTIFY_OK;
++		}
++		search_pending = true;
++		pending_vid = le16_to_cpu(udev->descriptor.idVendor);
++		pending_pid = le16_to_cpu(udev->descriptor.idProduct);
++		pending_host = get_device(udev->bus->controller);
++		spin_unlock(&usbc_pending_lock);
++		queue_delayed_work(system_long_wq, &usbc_learn_work,
++				   enable < 0 && !READ_ONCE(learned_count) ?
++				   msecs_to_jiffies(USBC_SETTLE_MS) : 0);
++	}
++	return NOTIFY_OK;
++}
++
++static struct notifier_block usbc_usb_nb = {
++	.notifier_call = usbc_usb_notify,
++};
++
++static int __init usbc_dp_init(void)
++{
++	usb_register_notify(&usbc_usb_nb);
++	return 0;
++}
++module_init(usbc_dp_init);
 +
 +MODULE_DESCRIPTION("PlayStation 5 USB-C DisplayPort policy");
 +MODULE_LICENSE("GPL");
@@ -17428,10 +17938,10 @@ index fbb62f7c3111..18edd8279773 100644
  extern void dmi_setup(void);
 diff --git a/include/linux/ps5.h b/include/linux/ps5.h
 new file mode 100755
-index 000000000000..9549b1666477
+index e69de29bb2d1..d7095b953c74 100644
 --- /dev/null
 +++ b/include/linux/ps5.h
-@@ -0,0 +1,259 @@
+@@ -0,0 +1,261 @@
 +/* SPDX-License-Identifier: GPL-2.0-only */
 +
 +#ifndef _LINUX_PS5_H
@@ -17665,6 +18175,8 @@ index 000000000000..9549b1666477
 +
 +void hdmi_notification_handler(struct icc_msg *msg);
 +void hdmi_set_hotplug_handler(void (*handler)(void *data), void *data);
++void hdmi_set_unplug_handler(void (*handler)(void *data), void *data);
++bool ps5_hdmi_sink_present(void);
 +void hdmi_set_cec_handler(void (*handler)(void *data, const struct icc_msg *msg),
 +			  void *data);
 +
@@ -19372,3 +19884,163 @@ index 000000000000..bea722b5f2a6
 +		dm_ps5_recovery_reject(recovery, &candidate, &conn->ps5_hdmi_plan);
 +	dm_ps5_recovery_report(recovery);
 +}
+diff --git a/drivers/gpu/drm/amd/display/dc/core/dc.c b/drivers/gpu/drm/amd/display/dc/core/dc.c
+index e25b94b65dac..a6975590aa77 100644
+--- a/drivers/gpu/drm/amd/display/dc/core/dc.c
++++ b/drivers/gpu/drm/amd/display/dc/core/dc.c
+@@ -1144,6 +1144,19 @@ static void disable_all_writeback_pipes_for_stream(
+ 		stream->writeback_info[i].wb_enabled = false;
+ }
+ 
++/* Full front-end updates use double-buffered locks on every pipe. */
++static void clear_triplebuffer_flags(struct dc *dc, struct dc_state *context)
++{
++	unsigned int i;
++
++	for (i = 0; i < dc->res_pool->pipe_count; i++) {
++		struct pipe_ctx *pipe = &context->res_ctx.pipe_ctx[i];
++
++		if (pipe->plane_state)
++			pipe->plane_state->triplebuffer_flips = false;
++	}
++}
++
+ static void apply_ctx_interdependent_lock(struct dc *dc,
+ 					  struct dc_state *context,
+ 					  struct dc_stream_state *stream,
+@@ -1412,6 +1425,8 @@ static void disable_dangling_plane(struct dc *dc, struct dc_state *context)
+ 				dc_update_visual_confirm_color(dc, context, pipe);
+ 			}
+ 
++			clear_triplebuffer_flags(dc, dc->current_state);
++			clear_triplebuffer_flags(dc, dangling_context);
+ 			if (dc->hwss.apply_ctx_for_surface) {
+ 				apply_ctx_interdependent_lock(dc, dc->current_state, old_stream, true);
+ 				dc->hwss.apply_ctx_for_surface(dc, old_stream, 0, dangling_context);
+@@ -2319,6 +2334,7 @@ static enum dc_status dc_commit_state_no_check(struct dc *dc, struct dc_state *c
+ 	if (dc->res_pool->funcs->prepare_mcache_programming)
+ 		dc->res_pool->funcs->prepare_mcache_programming(dc, context);
+ 	if (dc->hwss.program_front_end_for_ctx) {
++		clear_triplebuffer_flags(dc, context);
+ 		dc->hwss.interdependent_update_lock(dc, context, true);
+ 		dc->hwss.program_front_end_for_ctx(dc, context);
+ 
+@@ -4866,6 +4882,9 @@ static void commit_planes_for_stream(struct dc *dc,
+ 	if (dc->hwseq->funcs.wait_for_pipe_update_if_needed)
+ 		dc->hwseq->funcs.wait_for_pipe_update_if_needed(dc, top_pipe_to_program, update_type < UPDATE_TYPE_FULL);
+ 
++	if (should_lock_all_pipes)
++		clear_triplebuffer_flags(dc, context);
++
+ 	if (should_lock_all_pipes && dc->hwss.interdependent_update_lock) {
+ 		if (dc->hwss.subvp_pipe_control_lock)
+ 			dc->hwss.subvp_pipe_control_lock(dc, context, true, should_lock_all_pipes, NULL, subvp_prev_use);
+diff --git a/block/holder.c b/block/holder.c
+index 267beb3dc7a7..69887c7f356e 100644
+--- a/block/holder.c
++++ b/block/holder.c
+@@ -5,6 +5,7 @@
+ struct bd_holder_disk {
+ 	struct list_head	list;
+ 	struct kobject		*holder_dir;
++	struct block_device	*bdev;
+ 	int			refcnt;
+ };
+ 
+@@ -101,6 +102,7 @@ int bd_link_disk_holder(struct block_device *bdev, struct gendisk *disk)
+ 	INIT_LIST_HEAD(&holder->list);
+ 	holder->refcnt = 1;
+ 	holder->holder_dir = bdev->bd_holder_dir;
++	holder->bdev = bdev;
+ 
+ 	ret = add_symlink(disk->slave_dir, bdev_kobj(bdev));
+ 	if (ret)
+@@ -154,3 +156,36 @@ void bd_unlink_disk_holder(struct block_device *bdev, struct gendisk *disk)
+ 	mutex_unlock(&blk_holder_mutex);
+ }
+ EXPORT_SYMBOL_GPL(bd_unlink_disk_holder);
++
++static int disk_uses_device_locked(struct gendisk *disk, struct device *ancestor,
++				   unsigned int depth)
++{
++	struct bd_holder_disk *holder;
++	struct device *dev;
++	int ret, error = 0;
++
++	if (depth == 32)
++		return -ELOOP;
++	for (dev = disk_to_dev(disk); dev; dev = dev->parent)
++		if (dev == ancestor)
++			return 1;
++	list_for_each_entry(holder, &disk->slave_bdevs, list) {
++		ret = disk_uses_device_locked(holder->bdev->bd_disk, ancestor, depth + 1);
++		if (ret > 0)
++			return ret;
++		if (ret < 0)
++			error = ret;
++	}
++	return error;
++}
++
++int disk_uses_device(struct gendisk *disk, struct device *ancestor)
++{
++	int ret;
++
++	mutex_lock(&blk_holder_mutex);
++	ret = disk_uses_device_locked(disk, ancestor, 0);
++	mutex_unlock(&blk_holder_mutex);
++	return ret;
++}
++EXPORT_SYMBOL_GPL(disk_uses_device);
+diff --git a/include/linux/blkdev.h b/include/linux/blkdev.h
+index 9213a5716f95..691d962629a9 100644
+--- a/include/linux/blkdev.h
++++ b/include/linux/blkdev.h
+@@ -1011,9 +1011,14 @@ bool disk_check_media_change(struct gendisk *disk);
+ void set_capacity(struct gendisk *disk, sector_t size);
+ 
+ #ifdef CONFIG_BLOCK_HOLDER_DEPRECATED
++int disk_uses_device(struct gendisk *disk, struct device *ancestor);
+ int bd_link_disk_holder(struct block_device *bdev, struct gendisk *disk);
+ void bd_unlink_disk_holder(struct block_device *bdev, struct gendisk *disk);
+ #else
++static inline int disk_uses_device(struct gendisk *disk, struct device *ancestor)
++{
++	return -EOPNOTSUPP;
++}
+ static inline int bd_link_disk_holder(struct block_device *bdev,
+ 				      struct gendisk *disk)
+ {
+diff --git a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_hdcp.c b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_hdcp.c
+index 4c164ae4a4f9..16ccb2c360b8 100644
+--- a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_hdcp.c
++++ b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_hdcp.c
+@@ -581,7 +581,7 @@ static void update_config(void *handle, struct cp_psp_stream_config *config)
+ 	link->dp.mst_enabled = config->mst_enabled;
+ 	link->dp.dp2_enabled = config->dp2_enabled;
+ 	link->dp.usb4_enabled = config->usb4_enabled;
+-	if (aconnector->dc_sink->sink_signal == SIGNAL_TYPE_HDMI_FRL)
++	if (sink && sink->sink_signal == SIGNAL_TYPE_HDMI_FRL)
+ 		link->hdmi.frl_enabled = config->frl_enabled;
+ 	display->adjust.disable = MOD_HDCP_DISPLAY_DISABLE_AUTHENTICATION;
+ 	link->adjust.auth_delay = 2;
+diff --git a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_plane.c b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_plane.c
+index c7f8e08feaf4..b49a63fbeb1b 100644
+--- a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_plane.c
++++ b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_plane.c
+@@ -50,7 +50,6 @@
+ static const uint32_t rgb_formats[] = {
+ 	DRM_FORMAT_XRGB8888,
+ 	DRM_FORMAT_ARGB8888,
+-	DRM_FORMAT_RGBA8888,
+ 	DRM_FORMAT_XRGB2101010,
+ 	DRM_FORMAT_XBGR2101010,
+ 	DRM_FORMAT_ARGB2101010,
+@@ -67,7 +66,6 @@ static const uint32_t rgb_formats[] = {
+ static const uint32_t overlay_formats[] = {
+ 	DRM_FORMAT_XRGB8888,
+ 	DRM_FORMAT_ARGB8888,
+-	DRM_FORMAT_RGBA8888,
+ 	DRM_FORMAT_XBGR8888,
+ 	DRM_FORMAT_ABGR8888,
+ 	DRM_FORMAT_RGB565,
