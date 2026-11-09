@@ -1,0 +1,15 @@
+#!/sbin/openrc-run
+
+description="Import PS5 Bluetooth pairings"
+command="/usr/local/libexec/ps5-bt-sync"
+
+depend() {
+    need localmount
+    before bluetooth
+}
+
+start() {
+    ebegin "$description"
+    "$command"
+    eend $?
+}

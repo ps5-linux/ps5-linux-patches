@@ -1,0 +1,282 @@
+#!/usr/bin/env python3
+import argparse
+import configparser
+import fcntl
+import io
+import json
+import os
+from pathlib import Path
+import re
+import socket
+import stat
+import struct
+import tempfile
+import time
+
+
+def address(value):
+    value = value.upper()
+    if (not re.fullmatch(r"(?:[0-9A-F]{2}:){5}[0-9A-F]{2}", value)
+            or value in ("00:00:00:00:00:00", "FF:FF:FF:FF:FF:FF")):
+        raise ValueError("invalid adapter or device address")
+    return value
+
+
+def check_path(path):
+    if (not path.is_absolute() or ".." in path.parts
+            or any(p.is_symlink() for p in (path, *path.parents))):
+        raise ValueError("storage paths must be absolute and contain no symlinks")
+
+
+def read_file(path, limit):
+    check_path(path)
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(fd, "rb") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise ValueError("expected a regular file")
+        data = stream.read(limit + 1)
+        if len(data) > limit:
+            raise ValueError("file too large")
+        return data
+
+
+def stopped():
+    for path in Path("/proc").glob("[0-9]*/comm"):
+        try:
+            if path.read_bytes().strip() == b"bluetoothd":
+                raise ValueError("bluetoothd must be stopped before importing")
+        except (FileNotFoundError, ProcessLookupError):
+            pass
+
+
+def adapters():
+    deadline = time.monotonic() + 5
+    with socket.socket(socket.AF_BLUETOOTH, socket.SOCK_RAW, socket.BTPROTO_HCI) as sock:
+        sock.bind((0xffff, 3))
+
+        def request(command, index):
+            sock.sendall(struct.pack("<HHH", command, index, 0))
+            for _ in range(256):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("adapter query timed out")
+                sock.settimeout(remaining)
+                packet = sock.recv(4096)
+                if len(packet) < 6:
+                    raise ValueError("invalid management reply")
+                event, controller, length = struct.unpack_from("<HHH", packet)
+                if length != len(packet) - 6:
+                    raise ValueError("truncated management reply")
+                if controller != index or event not in (1, 2) or length < 3:
+                    continue
+                opcode, status = struct.unpack_from("<HB", packet, 6)
+                if opcode != command:
+                    continue
+                if status:
+                    raise ValueError("adapter query failed")
+                if event == 1:
+                    return packet[9:]
+            raise ValueError("too many management events")
+
+        data = request(3, 0xffff)
+        if len(data) < 2:
+            raise ValueError("invalid adapter list")
+        count = struct.unpack_from("<H", data)[0]
+        if count > 256 or len(data) != 2 + count * 2:
+            raise ValueError("invalid adapter list")
+        result = []
+        for index in struct.unpack_from(f"<{count}H", data, 2):
+            info = request(4, index)
+            if len(info) < 6:
+                raise ValueError("invalid adapter information")
+            result.append(":".join(f"{b:02X}" for b in info[:6][::-1]))
+        return result
+
+
+def unique_fields(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate export field")
+        result[key] = value
+    return result
+
+
+def validate(data, adapter):
+    bundle = json.loads(data, object_pairs_hook=unique_fields)
+    if (not isinstance(bundle, dict)
+            or set(bundle) != {"version", "adapter", "devices", "skipped"}
+            or type(bundle["version"]) is not int or bundle["version"] != 2
+            or bundle["adapter"] not in (None, adapter)
+            or not isinstance(bundle["devices"], list)
+            or type(bundle["skipped"]) is not int or not 0 <= bundle["skipped"] <= 32
+            or len(bundle["devices"]) + bundle["skipped"] > 32):
+        raise ValueError("invalid pairing export")
+    seen = set()
+    for device in bundle["devices"]:
+        if (not isinstance(device, dict)
+                or set(device) != {"peer", "name", "type", "class", "key"}):
+            raise ValueError("invalid device entry")
+        peer = address(device["peer"])
+        name = device["name"]
+        if (peer in seen or peer == adapter or not isinstance(name, str)
+                or not 1 <= len(name.encode("utf-8")) <= 127
+                or any(ord(c) < 32 or ord(c) == 127 for c in name)
+                or type(device["class"]) is not int or not 0 < device["class"] <= 0xffffff
+                or type(device["type"]) is not int or device["type"] != 4
+                or not isinstance(device["key"], str)
+                or not re.fullmatch(r"[0-9A-F]{32}", device["key"])
+                or device["key"] in ("0" * 32, "F" * 32)):
+            raise ValueError("invalid device entry")
+        seen.add(peer)
+        device["peer"] = peer
+    return bundle
+
+
+def merged(old, device):
+    info = configparser.ConfigParser(interpolation=None)
+    info.optionxform = str
+    info.read_string(old.decode("utf-8"))
+    if (info.get("LinkKey", "Key", fallback="").upper() == device["key"]
+            and info.get("LinkKey", "Type", fallback="") == "4"
+            and info.get("General", "Trusted", fallback="") == "true"):
+        return old
+    for section in ("General", "LinkKey"):
+        if not info.has_section(section):
+            info.add_section(section)
+    general = info["General"]
+    general.update(Name=device["name"], AddressType="public", Trusted="true",
+                   Class=f"0x{device['class']:06x}")
+    general.setdefault("SupportedTechnologies", "BR/EDR;")
+    if device["class"] & 0x1f00 == 0x500:
+        general.setdefault("Services", "00001124-0000-1000-8000-00805f9b34fb;"
+                           "00001200-0000-1000-8000-00805f9b34fb;")
+    info["LinkKey"].update(Key=device["key"], Type="4", PINLength="0")
+    output = io.StringIO()
+    info.write(output, space_around_delimiters=False)
+    return output.getvalue().encode("utf-8")
+
+
+def write_temp(directory, data):
+    fd, name = tempfile.mkstemp(prefix=".ps5-bt-sync-", dir=directory)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except BaseException:
+        os.unlink(name)
+        raise
+    return Path(name)
+
+
+def sync_directory(path):
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def install_bonds(storage, adapter, devices):
+    pending = []
+    try:
+        for device in devices:
+            target = storage / adapter / device["peer"] / "info"
+            check_path(target)
+            old = read_file(target, 1048576) if target.exists() else None
+            new = merged(old or b"", device)
+            if new == old:
+                continue
+            target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            temporary = write_temp(target.parent, new)
+            pending.append((target, old, temporary))
+            if old is not None:
+                backup = target.with_name(f"info.before-ps5-sync-{time.time_ns()}")
+                saved = write_temp(target.parent, old)
+                try:
+                    os.replace(saved, backup)
+                finally:
+                    saved.unlink(missing_ok=True)
+            sync_directory(target.parent)
+        stopped()
+        for target, old, temporary in pending:
+            current = read_file(target, 1048576) if target.exists() else None
+            if current != old:
+                raise ValueError("bond changed during import")
+        installed = []
+        try:
+            for target, old, temporary in pending:
+                os.replace(temporary, target)
+                installed.append((target, old))
+                sync_directory(target.parent)
+        except BaseException:
+            for target, old in reversed(installed):
+                if old is None:
+                    target.unlink()
+                else:
+                    os.replace(write_temp(target.parent, old), target)
+                sync_directory(target.parent)
+            raise
+        return len(pending)
+    finally:
+        for _, _, temporary in pending:
+            temporary.unlink(missing_ok=True)
+
+
+def find_adapter(configured):
+    for attempt in range(10):
+        found = adapters()
+        if configured in found:
+            return configured
+        if configured is None and len(found) == 1:
+            return found[0]
+        if attempt < 9:
+            time.sleep(1)
+    raise ValueError("adapter is not present")
+
+
+def run(config):
+    settings = configparser.ConfigParser(interpolation=None)
+    settings.read_string(read_file(config, 4096).decode("utf-8"))
+    options = settings["sync"]
+    configured = address(options["adapter"]) if options.get("adapter") else None
+    boot = Path(options["boot_directory"])
+    storage = Path(options.get("storage_directory", "/var/lib/bluetooth"))
+    check_path(boot)
+    check_path(storage)
+    source = boot / "ps5-bt-sync.json"
+    if not source.exists():
+        return "no pairing export"
+    check_path(source)
+    try:
+        stopped()
+        adapter = find_adapter(configured)
+        bundle = validate(read_file(source, 32768), adapter)
+        changed = install_bonds(storage, adapter, bundle["devices"])
+        return (f"{len(bundle['devices'])} pairings, {changed} updated, "
+                f"{bundle['skipped']} unsupported records skipped")
+    finally:
+        source.unlink(missing_ok=True)
+        sync_directory(boot)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=Path, default=Path("/etc/ps5-bt-sync.conf"))
+    args = parser.parse_args()
+    if os.geteuid() != 0:
+        parser.error("root is required")
+    os.umask(0o077)
+    check_path(Path("/run/ps5-bt-sync.lock"))
+    fd = os.open("/run/ps5-bt-sync.lock", os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        print(run(args.config))
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception:
+        raise SystemExit("pairing import failed; existing backups retained")

@@ -1,0 +1,15 @@
+[Unit]
+Description=Import PS5 Bluetooth pairings
+After=local-fs.target systemd-modules-load.service
+Before=bluetooth.service
+ConditionPathExists=/etc/ps5-bt-sync.conf
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/ps5-bt-sync
+TimeoutStartSec=30
+UMask=0077
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=bluetooth.service
