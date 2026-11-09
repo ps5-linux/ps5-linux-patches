@@ -2450,7 +2450,7 @@ index 00798d80479f..621df344abca 100644
  		for (j = 0; j < adev->gfx.config.max_sh_per_se; j++) {
  			bitmap = i * adev->gfx.config.max_sh_per_se + j;
 diff --git a/drivers/gpu/drm/amd/amdgpu/gmc_v10_0.c b/drivers/gpu/drm/amd/amdgpu/gmc_v10_0.c
-index c70657bc089b..c9117dfa2825 100644
+index c70657bc089b..316abfd84953 100644
 --- a/drivers/gpu/drm/amd/amdgpu/gmc_v10_0.c
 +++ b/drivers/gpu/drm/amd/amdgpu/gmc_v10_0.c
 @@ -232,12 +232,14 @@ static bool gmc_v10_0_get_atc_vmid_pasid_mapping_info(
@@ -2511,18 +2511,25 @@ index c70657bc089b..c9117dfa2825 100644
  /**
   * gmc_v10_0_flush_gpu_tlb_pasid - tlb flush via pasid
   *
-@@ -335,6 +353,10 @@ static void gmc_v10_0_flush_gpu_tlb_pasid(struct amdgpu_device *adev,
+@@ -334,7 +352,11 @@ static void gmc_v10_0_flush_gpu_tlb_pasid(struct amdgpu_device *adev,
+ 					  bool all_hub, uint32_t inst)
  {
  	uint16_t queried;
- 	int vmid, i;
+-	int vmid, i;
++	int vmid, i, matched = 0;
 +	bool gfx1013_pasid_path =
-+		(adev->pdev->device == 0x13FE ||
++		(adev->pdev->device == 0x13FE || adev->pdev->device == 0x13DB ||
 +		 adev->pdev->device == 0x13FB) &&
 +		amdgpu_ip_version(adev, GC_HWIP, 0) == IP_VERSION(10, 1, 3);
  
  	for (vmid = 1; vmid < AMDGPU_NUM_VMID; vmid++) {
  		bool valid;
-@@ -347,11 +369,21 @@ static void gmc_v10_0_flush_gpu_tlb_pasid(struct amdgpu_device *adev,
+@@ -343,17 +365,45 @@ static void gmc_v10_0_flush_gpu_tlb_pasid(struct amdgpu_device *adev,
+ 								  &queried);
+ 		if (!valid || queried != pasid)
+ 			continue;
++		matched++;
+ 
  		if (all_hub) {
  			for_each_set_bit(i, adev->vmhubs_mask,
  					 AMDGPU_MAX_VMHUBS)
@@ -2547,8 +2554,27 @@ index c70657bc089b..c9117dfa2825 100644
 +					flush_type);
  		}
  	}
++
++	/*
++	 * The PS5 never programs ATC_VMID*_PASID_MAPPING (all zero under HWS),
++	 * so the lookup above finds no VMID and nothing gets invalidated: KFD
++	 * then runs on stale translations (page faults, lost writes). Flush
++	 * every KFD VMID instead; that is only a few register writes.
++	 */
++	if (!matched && gfx1013_pasid_path) {
++		dev_info_once(adev->dev,
++			      "GFX1013: no VMID for PASID %u, flushing all KFD VMIDs\n",
++			      pasid);
++		for (vmid = adev->vm_manager.first_kfd_vmid;
++		     vmid < AMDGPU_NUM_VMID; vmid++)
++			for_each_set_bit(i, adev->vmhubs_mask, AMDGPU_MAX_VMHUBS)
++				gmc_v10_0_flush_gpu_tlb_internal(adev, vmid, i,
++								 flush_type, true);
++	}
  }
-@@ -960,7 +992,21 @@ static int gmc_v10_0_hw_init(struct amdgpu_ip_block *ip_block)
+ 
+ static uint64_t gmc_v10_0_emit_flush_gpu_tlb(struct amdgpu_ring *ring,
+@@ -960,7 +1010,21 @@ static int gmc_v10_0_hw_init(struct amdgpu_ip_block *ip_block)
  	struct amdgpu_device *adev = ip_block->adev;
  	int r;
  
