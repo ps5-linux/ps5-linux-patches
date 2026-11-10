@@ -1440,7 +1440,7 @@ index a3f7dabd4955..77f616a11b1c 100644
   * dmi_name_in_serial - Check if string is in the DMI product serial information
   * @str: string to check for
 diff --git a/drivers/gpu/drm/amd/amdgpu/amdgpu.h b/drivers/gpu/drm/amd/amdgpu/amdgpu.h
-index a9c6f5d4a639..2b6333a2402d 100644
+index a9c6f5d4a639..be37522ef55e 100644
 --- a/drivers/gpu/drm/amd/amdgpu/amdgpu.h
 +++ b/drivers/gpu/drm/amd/amdgpu/amdgpu.h
 @@ -269,6 +269,11 @@ extern int amdgpu_ptl;
@@ -1455,7 +1455,7 @@ index a9c6f5d4a639..2b6333a2402d 100644
  #define AMDGPU_SG_THRESHOLD			(256*1024*1024)
  #define AMDGPU_WAIT_IDLE_TIMEOUT_IN_MS	        3000
  #define AMDGPU_MAX_USEC_TIMEOUT			100000	/* 100 ms */
-@@ -960,6 +965,21 @@ struct amdgpu_device {
+@@ -960,6 +965,22 @@ struct amdgpu_device {
  
  	struct amdgpu_uma_carveout_info uma_info;
  
@@ -1472,12 +1472,13 @@ index a9c6f5d4a639..2b6333a2402d 100644
 +	struct hrtimer			ps5_kfd_timer;	/* KFD GUI_ACTIVE sampling */
 +	bool				ps5_kfd_busy;
 +	struct platform_device		*ps5_gpufreq;
++	struct device			*ps5_hwmon;
 +#endif
 +
  	/* KFD
  	 * Must be last --ends in a flexible-array member.
  	 */
-@@ -982,6 +1002,30 @@ static inline uint32_t amdgpu_ip_version_full(const struct amdgpu_device *adev,
+@@ -982,6 +1003,36 @@ static inline uint32_t amdgpu_ip_version_full(const struct amdgpu_device *adev,
  	return adev->ip_versions[ip][inst];
  }
  
@@ -1504,6 +1505,12 @@ index a9c6f5d4a639..2b6333a2402d 100644
 +	return false;
 +#endif
 +}
++
++#ifdef CONFIG_X86_PS5
++extern int amdgpu_ps5_sensors;
++int amdgpu_ps5_sensors_init(struct amdgpu_device *adev);
++void amdgpu_ps5_sensors_fini(struct amdgpu_device *adev);
++#endif
 +
  static inline struct amdgpu_device *drm_to_adev(struct drm_device *ddev)
  {
@@ -1573,7 +1580,7 @@ index 08ed1eb69558..71d9e999fdc9 100644
  	if (amdgpu_read_platform_bios(adev)) {
  		dev_info(adev->dev, "Fetched VBIOS from platform\n");
 diff --git a/drivers/gpu/drm/amd/amdgpu/amdgpu_device.c b/drivers/gpu/drm/amd/amdgpu/amdgpu_device.c
-index 9269e780feb7..52ab4c8d73b6 100644
+index 9269e780feb7..45b417fc71b9 100644
 --- a/drivers/gpu/drm/amd/amdgpu/amdgpu_device.c
 +++ b/drivers/gpu/drm/amd/amdgpu/amdgpu_device.c
 @@ -1855,6 +1855,26 @@ static int amdgpu_device_parse_gpu_info_fw(struct amdgpu_device *adev)
@@ -1603,26 +1610,30 @@ index 9269e780feb7..52ab4c8d73b6 100644
  		chip_name = "cyan_skillfish";
  		break;
  	}
-@@ -3722,6 +3742,14 @@ static int amdgpu_device_sys_interface_init(struct amdgpu_device *adev)
+@@ -3722,6 +3742,17 @@ static int amdgpu_device_sys_interface_init(struct amdgpu_device *adev)
  	amdgpu_uma_sysfs_init(adev);
  	amdgpu_ptl_sysfs_init(adev);
  
 +#ifdef CONFIG_X86_PS5
 +	/* A Pro without Viola firmware loses its SMU mailbox. */
 +	if (adev->asic_type == CHIP_CYAN_SKILLFISH &&
-+	    (!amdgpu_is_viola(adev) || amdgpu_ps5_viola_fw(adev)))
++	    (!amdgpu_is_viola(adev) || amdgpu_ps5_viola_fw(adev))) {
 +		adev->ps5_gpufreq = ps5_gpufreq_register(adev->dev,
 +							 amdgpu_fence_ps5_busy_ns);
++		if (amdgpu_ps5_sensors_init(adev))
++			dev_warn(adev->dev, "PS5 GPU sensors unavailable\n");
++	}
 +#endif
 +
  	return r;
  }
  
-@@ -3742,6 +3770,11 @@ static void amdgpu_device_sys_interface_fini(struct amdgpu_device *adev)
+@@ -3742,6 +3773,12 @@ static void amdgpu_device_sys_interface_fini(struct amdgpu_device *adev)
  	amdgpu_xcp_sysfs_fini(adev);
  	amdgpu_uma_sysfs_fini(adev);
  	amdgpu_ptl_sysfs_fini(adev);
 +#ifdef CONFIG_X86_PS5
++	amdgpu_ps5_sensors_fini(adev);
 +	amdgpu_fence_ps5_kfd_active(adev, false);
 +	platform_device_unregister(adev->ps5_gpufreq);
 +	adev->ps5_gpufreq = NULL;
@@ -1630,7 +1641,7 @@ index 9269e780feb7..52ab4c8d73b6 100644
  }
  
  static bool
-@@ -3848,6 +3881,9 @@ int amdgpu_device_init(struct amdgpu_device *adev,
+@@ -3848,6 +3885,9 @@ int amdgpu_device_init(struct amdgpu_device *adev,
  		return r;
  
  	spin_lock_init(&adev->mmio_idx_lock);
@@ -1714,7 +1725,7 @@ index 7ab2ad2c5ba9..cd16717fdc9e 100644
  	     amdgpu_dpm == 1)) {
  		r = amdgpu_discovery_set_smu_ip_blocks(adev);
 diff --git a/drivers/gpu/drm/amd/amdgpu/amdgpu_drv.c b/drivers/gpu/drm/amd/amdgpu/amdgpu_drv.c
-index d9d794a7db96..914d702133b1 100644
+index d9d794a7db96..0b7b266e25ed 100644
 --- a/drivers/gpu/drm/amd/amdgpu/amdgpu_drv.c
 +++ b/drivers/gpu/drm/amd/amdgpu/amdgpu_drv.c
 @@ -40,6 +40,10 @@
@@ -1728,7 +1739,24 @@ index d9d794a7db96..914d702133b1 100644
  #include "amdgpu.h"
  #include "amdgpu_amdkfd.h"
  #include "amdgpu_dma_buf.h"
-@@ -1125,6 +1129,12 @@ module_param_named(hdmi_hpd_debounce_delay_ms, amdgpu_hdmi_hpd_debounce_delay_ms
+@@ -316,6 +320,16 @@ module_param_named(moverate, amdgpu_moverate, int, 0600);
+ MODULE_PARM_DESC(audio, "HDMI/DP Audio enable for non DC displays (-1 = auto, 0 = disable, 1 = enable)");
+ module_param_named(audio, amdgpu_audio, int, 0444);
+ 
++#ifdef CONFIG_X86_PS5
++/**
++ * DOC: ps5_sensors (int)
++ * Expose PS5 GPU load, temperature and clock. The default is 1 (enable).
++ */
++int amdgpu_ps5_sensors = 1;
++MODULE_PARM_DESC(ps5_sensors, "PS5 GPU sensors (0 = disable, 1 = enable (default))");
++module_param_named(ps5_sensors, amdgpu_ps5_sensors, int, 0444);
++#endif
++
+ /**
+  * DOC: disp_priority (int)
+  * Set display Priority (1 = normal, 2 = high). Only affects non-DC display handling. The default is 0 (auto).
+@@ -1125,6 +1139,12 @@ module_param_named(hdmi_hpd_debounce_delay_ms, amdgpu_hdmi_hpd_debounce_delay_ms
  MODULE_PARM_DESC(ptl, "Enable PTL (-1 = auto, 0 = disable (default), 1 = enable, 2 = permanently disable)");
  module_param_named(ptl, amdgpu_ptl, int, 0444);
  
@@ -1741,7 +1769,7 @@ index d9d794a7db96..914d702133b1 100644
  /* These devices are not supported by amdgpu.
   * They are supported by the mach64, r128, radeon drivers
   */
-@@ -2174,7 +2184,9 @@ static const struct pci_device_id pciidlist[] = {
+@@ -2174,7 +2194,9 @@ static const struct pci_device_id pciidlist[] = {
  	{ PCI_DEVICE(0x1002, 0x7410), .driver_data = CHIP_ALDEBARAN },
  
  	/* CYAN_SKILLFISH */
@@ -1751,7 +1779,7 @@ index d9d794a7db96..914d702133b1 100644
  	{ PCI_DEVICE(0x1002, 0x13F9), .driver_data = CHIP_CYAN_SKILLFISH|AMD_IS_APU },
  	{ PCI_DEVICE(0x1002, 0x13FA), .driver_data = CHIP_CYAN_SKILLFISH|AMD_IS_APU },
  	{ PCI_DEVICE(0x1002, 0x13FB), .driver_data = CHIP_CYAN_SKILLFISH|AMD_IS_APU },
-@@ -2392,6 +2404,25 @@ static int amdgpu_pci_probe(struct pci_dev *pdev,
+@@ -2392,6 +2414,25 @@ static int amdgpu_pci_probe(struct pci_dev *pdev,
  	int ret, retry = 0, i;
  	bool supports_atomic = false;
  
@@ -8912,10 +8940,10 @@ index 000000000000..5a53c5f719bc
 +MODULE_LICENSE("GPL");
 diff --git a/drivers/ps5/fan.c b/drivers/ps5/fan.c
 new file mode 100644
-index 000000000000..2e2231559799
+index 000000000000..bce373429e1c
 --- /dev/null
 +++ b/drivers/ps5/fan.c
-@@ -0,0 +1,1022 @@
+@@ -0,0 +1,1063 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +
 +#include <linux/module.h>
@@ -8937,6 +8965,11 @@ index 000000000000..2e2231559799
 +
 +#define PS5_FAN_PARAM_OFF		4
 +#define PS5_FAN_PARAM_SIZE		0x6ae
++
++static bool restore_table = true;
++module_param(restore_table, bool, 0444);
++MODULE_PARM_DESC(restore_table,
++		 "Restore the console servo table at suspend and shutdown (default: true)");
 +
 +#define GDDR6_SAMSUNG		0x01
 +#define GDDR6_HYNIX		0x06
@@ -9252,6 +9285,7 @@ index 000000000000..2e2231559799
 +	bool emergency;
 +	bool suspended;
 +	bool has_sensor18;
++	bool original_ok;
 +};
 +
 +static int ps5_fan_message(u8 service, u16 type, u16 length,
@@ -9364,6 +9398,32 @@ index 000000000000..2e2231559799
 +	}
 +
 +	put_unaligned_le16(0, data->backup + 0x583);
++}
++
++/*
++ * An earlier kernel left its quiet table, after a kexec on a board without
++ * a table above.
++ */
++static bool ps5_fan_quiet_left(const u8 *table)
++{
++	int block, field;
++
++	for (block = 0; block < 4; block++) {
++		const u8 *record = table + block * 0x160 + 0x20;
++
++		for (field = 0; field < ARRAY_SIZE(ps5_fan_quiet_servo); field++)
++			if (get_unaligned_le32(record + ps5_fan_quiet_servo[field].offset) !=
++			    ps5_fan_quiet_servo[field].value)
++				return false;
++	}
++	return true;
++}
++
++static void ps5_fan_restore_original(struct ps5_fan_data *data)
++{
++	if (restore_table && data->original_ok &&
++	    icc_fan_update_param(data->original))
++		dev_warn(data->dev, "console servo table not restored\n");
 +}
 +
 +/*
@@ -9790,6 +9850,10 @@ index 000000000000..2e2231559799
 +	ret = ps5_fan_snapshot(data);
 +	if (ret)
 +		return ret;
++	data->original_ok = !ps5_fan_quiet_left(data->original);
++	if (!data->original_ok)
++		dev_warn(&pdev->dev,
++			 "servo table already changed by an earlier kernel, not restoring\n");
 +	duty = get_unaligned_le16(data->original + 2);
 +	data->default_curve = ps5_fan_board_curve(ps5_duty_to_pwm(duty));
 +	data->curve = data->default_curve;
@@ -9831,8 +9895,12 @@ index 000000000000..2e2231559799
 +	mutex_unlock(&data->lock);
 +	cancel_delayed_work_sync(&data->work);
 +	mutex_lock(&data->lock);
++	ps5_fan_restore_original(data);
 +	data->wire_mode = -1;
 +	ret = ps5_fan_set_mode(data, PS5_FAN_MODE_AUTO);
++	/* Linux keeps the fan */
++	if (ret && restore_table && data->original_ok)
++		icc_fan_update_param(data->backup);
 +	mutex_unlock(&data->lock);
 +	if (ret) {
 +		mutex_lock(&data->lock);
@@ -9880,6 +9948,7 @@ index 000000000000..2e2231559799
 +	mutex_unlock(&data->lock);
 +	cancel_delayed_work_sync(&data->work);
 +	mutex_lock(&data->lock);
++	ps5_fan_restore_original(data);
 +	data->wire_mode = -1;
 +	if (ps5_fan_set_mode(data, PS5_FAN_MODE_AUTO))
 +		dev_warn(data->dev,
@@ -17408,7 +17477,7 @@ index 174580c1281a..87d0ec62b3d1 100644
  obj-$(CONFIG_USB_XHCI_PCI_RENESAS)	+= xhci-pci-renesas.o
  obj-$(CONFIG_USB_XHCI_PLATFORM) += xhci-plat-hcd.o
 diff --git a/drivers/usb/host/xhci-pci.c b/drivers/usb/host/xhci-pci.c
-index a8889081ae82..9841be24aa03 100644
+index a8889081ae82..54bdb35bf19d 100644
 --- a/drivers/usb/host/xhci-pci.c
 +++ b/drivers/usb/host/xhci-pci.c
 @@ -19,6 +19,7 @@
@@ -17457,7 +17526,18 @@ index a8889081ae82..9841be24aa03 100644
  	retval = xhci_gen_setup(hcd, xhci_pci_quirks);
  	if (retval)
  		return retval;
-@@ -727,6 +745,11 @@ void xhci_pci_remove(struct pci_dev *dev)
+@@ -670,7 +688,9 @@ int xhci_pci_common_probe(struct pci_dev *dev, const struct pci_device_id *id)
+ 	/* USB-2 and USB-3 roothubs initialized, allow runtime pm suspend */
+ 	pm_runtime_put_noidle(&dev->dev);
+ 
+-	if (pci_choose_state(dev, PMSG_SUSPEND) == PCI_D0)
++	/* The PS5 Salina controller does not return from runtime D3 */
++	if (pci_choose_state(dev, PMSG_SUSPEND) == PCI_D0 ||
++	    (xhci->quirks & XHCI_PS5_SALINA_PHY))
+ 		pm_runtime_get(&dev->dev);
+ 	else if (xhci->quirks & XHCI_DEFAULT_PM_RUNTIME_ALLOW)
+ 		pm_runtime_allow(&dev->dev);
+@@ -727,9 +747,15 @@ void xhci_pci_remove(struct pci_dev *dev)
  	xhci = hcd_to_xhci(pci_get_drvdata(dev));
  	set_power_d3 = xhci->quirks & XHCI_SPURIOUS_WAKEUP;
  
@@ -17468,8 +17548,13 @@ index a8889081ae82..9841be24aa03 100644
 +
  	xhci->xhc_state |= XHCI_STATE_REMOVING;
  
- 	if (pci_choose_state(dev, PMSG_SUSPEND) == PCI_D0)
-@@ -959,6 +982,7 @@ static const struct pci_device_id pci_ids[] = {
+-	if (pci_choose_state(dev, PMSG_SUSPEND) == PCI_D0)
++	if (pci_choose_state(dev, PMSG_SUSPEND) == PCI_D0 ||
++	    (xhci->quirks & XHCI_PS5_SALINA_PHY))
+ 		pm_runtime_put(&dev->dev);
+ 	else if (xhci->quirks & XHCI_DEFAULT_PM_RUNTIME_ALLOW)
+ 		pm_runtime_forbid(&dev->dev);
+@@ -959,6 +985,7 @@ static const struct pci_device_id pci_ids[] = {
  	/* handle any USB 3.0 xHCI controller */
  	{ PCI_DEVICE_CLASS(PCI_CLASS_SERIAL_USB_XHCI, ~0),
  	},
@@ -20270,3 +20355,130 @@ index 4f7905c3412b..29ab86e621ff 100644
  static inline int bd_link_disk_holder(struct block_device *bdev,
  				      struct gendisk *disk)
  {
+diff --git a/drivers/gpu/drm/amd/amdgpu/Makefile b/drivers/gpu/drm/amd/amdgpu/Makefile
+index 105b9dcc19a2..6f6f4853ec50 100644
+--- a/drivers/gpu/drm/amd/amdgpu/Makefile
++++ b/drivers/gpu/drm/amd/amdgpu/Makefile
+@@ -78,6 +78,8 @@ amdgpu-$(CONFIG_PROC_FS) += amdgpu_fdinfo.o
+ 
+ amdgpu-$(CONFIG_PERF_EVENTS) += amdgpu_pmu.o
+ 
++amdgpu-$(CONFIG_X86_PS5) += amdgpu_ps5_sensors.o
++
+ # add asic specific block
+ amdgpu-$(CONFIG_DRM_AMDGPU_CIK)+= cik.o cik_ih.o \
+ 	dce_v8_0.o gfx_v7_0.o cik_sdma.o uvd_v4_2.o vce_v2_0.o
+diff --git a/drivers/gpu/drm/amd/amdgpu/amdgpu_ps5_sensors.c b/drivers/gpu/drm/amd/amdgpu/amdgpu_ps5_sensors.c
+new file mode 100644
+index 000000000000..6b97c8599845
+--- /dev/null
++++ b/drivers/gpu/drm/amd/amdgpu/amdgpu_ps5_sensors.c
+@@ -0,0 +1,108 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * amdgpu runs without its SMU block on the PS5, so the standard pm sysfs
++ * is never created. Export load, temperature and clock instead.
++ */
++
++#include <linux/hwmon.h>
++#include <linux/hwmon-sysfs.h>
++#include <linux/ps5.h>
++#include <linux/units.h>
++
++#include "amdgpu.h"
++
++static ssize_t ps5_gpu_busy_percent_show(struct device *dev,
++					 struct device_attribute *attr,
++					 char *buf)
++{
++	struct drm_device *ddev = dev_get_drvdata(dev);
++	struct amdgpu_device *adev = drm_to_adev(ddev);
++
++	return sysfs_emit(buf, "%u\n", amdgpu_fence_ps5_busy_percent(adev));
++}
++static DEVICE_ATTR(gpu_busy_percent, 0444, ps5_gpu_busy_percent_show, NULL);
++
++static ssize_t ps5_hwmon_temp1_input_show(struct device *dev,
++					  struct device_attribute *attr,
++					  char *buf)
++{
++	int temp, ret;
++
++	ret = ps5_soc_temp(&temp);
++	if (ret)
++		return ret;
++	return sysfs_emit(buf, "%d\n", temp);
++}
++
++static ssize_t ps5_hwmon_temp1_label_show(struct device *dev,
++					  struct device_attribute *attr,
++					  char *buf)
++{
++	return sysfs_emit(buf, "edge\n");
++}
++
++static ssize_t ps5_hwmon_freq1_input_show(struct device *dev,
++					  struct device_attribute *attr,
++					  char *buf)
++{
++	u32 mhz;
++	int ret;
++
++	ret = ps5_mp1_query_gfxclk(&mhz);
++	if (ret)
++		return ret;
++	return sysfs_emit(buf, "%llu\n", (u64)mhz * HZ_PER_MHZ);
++}
++
++static ssize_t ps5_hwmon_freq1_label_show(struct device *dev,
++					  struct device_attribute *attr,
++					  char *buf)
++{
++	return sysfs_emit(buf, "sclk\n");
++}
++
++static SENSOR_DEVICE_ATTR(temp1_input, 0444, ps5_hwmon_temp1_input_show, NULL, 0);
++static SENSOR_DEVICE_ATTR(temp1_label, 0444, ps5_hwmon_temp1_label_show, NULL, 0);
++static SENSOR_DEVICE_ATTR(freq1_input, 0444, ps5_hwmon_freq1_input_show, NULL, 0);
++static SENSOR_DEVICE_ATTR(freq1_label, 0444, ps5_hwmon_freq1_label_show, NULL, 0);
++
++static struct attribute *ps5_hwmon_attrs[] = {
++	&sensor_dev_attr_temp1_input.dev_attr.attr,
++	&sensor_dev_attr_temp1_label.dev_attr.attr,
++	&sensor_dev_attr_freq1_input.dev_attr.attr,
++	&sensor_dev_attr_freq1_label.dev_attr.attr,
++	NULL
++};
++ATTRIBUTE_GROUPS(ps5_hwmon);
++
++int amdgpu_ps5_sensors_init(struct amdgpu_device *adev)
++{
++	int ret;
++
++	if (!amdgpu_ps5_sensors)
++		return 0;
++
++	ret = device_create_file(adev->dev, &dev_attr_gpu_busy_percent);
++	if (ret)
++		return ret;
++
++	adev->ps5_hwmon = hwmon_device_register_with_groups(adev->dev,
++							    "amdgpu", adev,
++							    ps5_hwmon_groups);
++	if (IS_ERR(adev->ps5_hwmon)) {
++		ret = PTR_ERR(adev->ps5_hwmon);
++		adev->ps5_hwmon = NULL;
++		device_remove_file(adev->dev, &dev_attr_gpu_busy_percent);
++		return ret;
++	}
++	return 0;
++}
++
++void amdgpu_ps5_sensors_fini(struct amdgpu_device *adev)
++{
++	if (!adev->ps5_hwmon)
++		return;
++	hwmon_device_unregister(adev->ps5_hwmon);
++	adev->ps5_hwmon = NULL;
++	device_remove_file(adev->dev, &dev_attr_gpu_busy_percent);
++}
