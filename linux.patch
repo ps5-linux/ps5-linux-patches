@@ -6987,12 +6987,13 @@ index 27008e2ea5af..06d4dc14a388 100644
  
 diff --git a/drivers/ps5/Makefile b/drivers/ps5/Makefile
 new file mode 100644
-index 000000000000..759960c8d76f
+index 000000000000..d19f87921278
 --- /dev/null
 +++ b/drivers/ps5/Makefile
-@@ -0,0 +1,3 @@
+@@ -0,0 +1,4 @@
 +obj-y += spcie.o tpcie.o hdmi.o mp1.o buzzer.o svm.o vmenter.o fan.o ps5-cec.o usbc_dp.o
 +obj-y += gpufreq.o
++obj-y += ps5_rtc.o
 +obj-y += led/
 diff --git a/drivers/ps5/autoservo_param.h b/drivers/ps5/autoservo_param.h
 new file mode 100644
@@ -15872,12 +15873,521 @@ index 000000000000..5ea1519823c3
 +#define PS5_TARGETTEMP_SHIFT	8
 +
 +#endif /* _PS5_FAN_H */
+diff --git a/drivers/ps5/ps5_rtc.c b/drivers/ps5/ps5_rtc.c
+new file mode 100644
+index 000000000000..69a4552233a9
+--- /dev/null
++++ b/drivers/ps5/ps5_rtc.c
+@@ -0,0 +1,503 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * PS5 real-time clock.
++ *
++ * The Salina counter (BAR4 0x80d0, valid when both 0x300 bits are set at
++ * 0x80cc) counts seconds since 2012-01-01 UTC and is never written. Sony keeps
++ * a per-console correction in registry key 0x05140000 (NVS partition 4,
++ * offset 0x6c): time = raw + epoch + correction.
++ *
++ * Setting the time saves a new correction the way Sony's OS does, only for
++ * the tested registry layout, at most a week from the stored value and
++ * PS5_RTC_MAX_SAVES times per boot. A failed save stops saving until reboot.
++ */
++
++#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
++
++#include <linux/module.h>
++#include <linux/pci.h>
++#include <linux/ps5.h>
++#include <linux/rtc.h>
++#include <linux/delay.h>
++#include <linux/slab.h>
++#include <linux/timekeeping.h>
++#include <linux/unaligned.h>
++
++static bool enable = true;
++module_param(enable, bool, 0444);
++MODULE_PARM_DESC(enable, "Register the PS5 RTC (default on)");
++
++static bool allow_write = true;
++module_param_named(write, allow_write, bool, 0444);
++MODULE_PARM_DESC(write, "Save time changes to Sony's RTC correction in NVS (default on)");
++
++#define PS5_RTC_STATUS		0x80cc
++#define PS5_RTC_COUNTER		0x80d0
++#define PS5_RTC_VALID		0x300
++#define PS5_RTC_EPOCH		1325376000LL	/* 2012-01-01 UTC */
++#define PS5_RTC_ATTEMPTS	16
++#define PS5_RTC_MIN_UTC		946684800LL	/* 2000-01-01 */
++#define PS5_RTC_MAX_UTC		4102444799LL	/* 2099-12-31 */
++#define PS5_RTC_SANE_UTC	1735689600LL	/* 2025-01-01 */
++#define PS5_RTC_MAX_CORRECTION	(10 * 366 * 86400LL)
++#define PS5_RTC_MAX_STEP	(7 * 86400LL)
++/* Smaller changes are counter phase jitter and are not saved. */
++#define PS5_RTC_MIN_CHANGE	5
++#define PS5_RTC_MAX_SAVES	4
++
++#define PS5_NVS_PART		4
++#define PS5_NVS_CHUNKS		4
++#define PS5_NVS_CHUNK		0x300
++#define PS5_REG_IMAGE		(PS5_NVS_CHUNKS * PS5_NVS_CHUNK)
++#define PS5_REG_GENERATION	0x0a
++#define PS5_REG_SUM1		0x10
++#define PS5_REG_LAYOUT		0x24
++#define PS5_REG_CORRECTION	0x6c
++#define PS5_REG_HALF		0x600
++#define PS5_REG_SAVED_US	0x604
++#define PS5_REG_SUM2		0x620
++#define PS5_REG_USED2		0x624
++#define PS5_REG_MAGIC1		0x19680228
++#define PS5_REG_MAGIC2		0x19990816
++
++static const u16 ps5_nvs_offsets[PS5_NVS_CHUNKS] = { 0x1000, 0x1300, 0x1620, 0x1920 };
++/* Registry header of the layout with the correction at 0x6c. */
++static const u8 ps5_reg_head1[4] = { 0x01, 0x00, 0x30, 0x01 };
++static const u8 ps5_reg_head2[4] = { 0x31, 0x00, 0x70, 0x01 };
++#define PS5_REG_LAYOUT_ID	0x01320001
++
++struct ps5_rtc {
++	s64 correction;
++	u32 last;
++	u8 saves;
++	bool save_off;		/* no more saves this boot */
++	bool step_logged;
++	struct mutex lock;	/* protects the fields above */
++};
++
++/* RTC ops get the spcie device, whose drvdata is spcie's. */
++static struct ps5_rtc *ps5_rtc;
++static void *ps5_rtc_group;
++
++static u32 ps5_rtc_reg(u32 offset)
++{
++	return spcie_pervasive0_4000_read(offset - 0x4000);
++}
++
++static int ps5_rtc_counter(u32 *counter)
++{
++	u32 before, after, first, second;
++	unsigned int i;
++
++	for (i = 0; i < PS5_RTC_ATTEMPTS; i++) {
++		before = ps5_rtc_reg(PS5_RTC_STATUS);
++		first = ps5_rtc_reg(PS5_RTC_COUNTER);
++		usleep_range(100, 200);
++		second = ps5_rtc_reg(PS5_RTC_COUNTER);
++		after = ps5_rtc_reg(PS5_RTC_STATUS);
++		if (before == ~0U || after == ~0U || first == ~0U || second == ~0U)
++			return -EIO;
++		if ((before & PS5_RTC_VALID) != PS5_RTC_VALID ||
++		    (after & PS5_RTC_VALID) != PS5_RTC_VALID)
++			return -EINVAL;
++		if (first == second) {
++			*counter = second;
++			return 0;
++		}
++	}
++	return -ETIMEDOUT;
++}
++
++static int ps5_rtc_utc(u32 counter, s64 correction, s64 *utc)
++{
++	if (check_add_overflow((s64)counter + PS5_RTC_EPOCH, correction, utc) ||
++	    *utc < PS5_RTC_MIN_UTC || *utc > PS5_RTC_MAX_UTC)
++		return -ERANGE;
++	return 0;
++}
++
++static bool ps5_rtc_correction_ok(s64 correction)
++{
++	return correction > -PS5_RTC_MAX_CORRECTION && correction < PS5_RTC_MAX_CORRECTION;
++}
++
++static bool ps5_rtc_sane(u32 counter, s64 correction)
++{
++	s64 utc;
++
++	return !ps5_rtc_utc(counter, correction, &utc) && utc >= PS5_RTC_SANE_UTC;
++}
++
++/* Sony's registry container checksum over 0x600 bytes, magic in @slot. */
++static u32 ps5_reg_checksum(const u8 *data, unsigned int slot, u32 magic)
++{
++	static const u8 seed[8] = { 0x72, 0x02, 0x85, 0x61, 0xe0, 0x1c, 0xbb, 0x89 };
++	u64 state = 0x89bb1ce061850272ULL;
++	unsigned int i;
++	u8 x;
++
++	for (i = 0; i < PS5_REG_HALF; i++) {
++		x = i >= slot && i < slot + 4 ? magic >> ((i - slot) * 8) : data[i];
++		state = (x ? x : 3) * (state + ((u64)(seed[i % 8] ^ x) << ((i % 8) * 8)));
++	}
++	return state >> 32;
++}
++
++static u32 ps5_reg_sum1(const u8 *image)
++{
++	return ps5_reg_checksum(image, PS5_REG_SUM1, PS5_REG_MAGIC1);
++}
++
++static u32 ps5_reg_sum2(const u8 *image)
++{
++	return ps5_reg_checksum(image + PS5_REG_HALF, PS5_REG_SUM2 - PS5_REG_HALF,
++				PS5_REG_MAGIC2);
++}
++
++static bool ps5_reg_valid(const u8 *image)
++{
++	return get_unaligned_be32(image + PS5_REG_SUM1) == ps5_reg_sum1(image) &&
++	       get_unaligned_be32(image + PS5_REG_SUM2) == ps5_reg_sum2(image);
++}
++
++/* Accept only the layout seen on the tested consoles. */
++static bool ps5_reg_known(const u8 *image)
++{
++	return !memcmp(image, ps5_reg_head1, sizeof(ps5_reg_head1)) &&
++	       !memcmp(image + 6, ps5_reg_head2, sizeof(ps5_reg_head2)) &&
++	       get_unaligned_le32(image + PS5_REG_LAYOUT) == PS5_REG_LAYOUT_ID &&
++	       get_unaligned_le16(image + PS5_REG_USED2) < 0xbc1;
++}
++
++/* Only the fields Sony's save changes may differ between two images. */
++static bool ps5_reg_allowed(unsigned int i)
++{
++	return (i >= PS5_REG_GENERATION && i < PS5_REG_GENERATION + 2) ||
++	       (i >= PS5_REG_SUM1 && i < PS5_REG_SUM1 + 4) ||
++	       (i >= PS5_REG_CORRECTION && i < PS5_REG_CORRECTION + 8) ||
++	       (i >= PS5_REG_SAVED_US && i < PS5_REG_SAVED_US + 4) ||
++	       (i >= PS5_REG_SUM2 && i < PS5_REG_SUM2 + 4);
++}
++
++static int ps5_reg_update(const u8 *old, u8 *next, s64 correction, u64 now_us)
++{
++	unsigned int i;
++
++	memcpy(next, old, PS5_REG_IMAGE);
++	put_unaligned_le64(correction, next + PS5_REG_CORRECTION);
++	put_unaligned_le16(get_unaligned_le16(old + PS5_REG_GENERATION) + 1,
++			   next + PS5_REG_GENERATION);
++	put_unaligned_le32(lower_32_bits(now_us), next + PS5_REG_SAVED_US);
++	put_unaligned_be32(ps5_reg_sum1(next), next + PS5_REG_SUM1);
++	put_unaligned_be32(ps5_reg_sum2(next), next + PS5_REG_SUM2);
++
++	if (!ps5_reg_valid(old) || !ps5_reg_valid(next))
++		return -EINVAL;
++	for (i = 0; i < PS5_REG_IMAGE; i++)
++		if (!ps5_reg_allowed(i) && old[i] != next[i])
++			return -EPERM;
++	return 0;
++}
++
++/* One fixed NVS chunk read (type 1) or write (type 0); @packet is scratch. */
++static int ps5_nvs_chunk(u8 *packet, bool save, unsigned int index, u8 *data)
++{
++	struct icc_msg *msg = (void *)packet;
++	int ret;
++
++	memset(packet, 0, ICC_MSG_MAX_SIZE);
++	msg->service_id = ICC_SERVICE_ID_NVS;
++	msg->msg_type = save ? 0 : 1;
++	msg->length = save ? 18 + PS5_NVS_CHUNK : ICC_MSG_MIN_SIZE;
++	msg->data[1] = PS5_NVS_PART;
++	put_unaligned_le16(ps5_nvs_offsets[index], &msg->data[2]);
++	put_unaligned_le16(PS5_NVS_CHUNK, &msg->data[4]);
++	if (save)
++		memcpy(&msg->data[6], data, PS5_NVS_CHUNK);
++
++	ret = icc_query(packet, packet);
++	if (ret)
++		return ret;
++	if (msg->magic != 0x42 || msg->service_id != ICC_SERVICE_ID_NVS ||
++	    msg->msg_type != (save ? 0x4000 : 0x4001) ||
++	    msg->length < 14 || msg->length > ICC_MSG_MAX_SIZE)
++		return -EPROTO;
++	if (get_unaligned_le16(&msg->data[0]))
++		return -EIO;
++	if (!save) {
++		if (msg->length < 14 + PS5_NVS_CHUNK)
++			return -EPROTO;
++		memcpy(data, &msg->data[2], PS5_NVS_CHUNK);
++	}
++	return 0;
++}
++
++static int ps5_nvs_read_image(u8 *packet, u8 *image)
++{
++	unsigned int i;
++	int ret;
++
++	for (i = 0; i < PS5_NVS_CHUNKS; i++) {
++		ret = ps5_nvs_chunk(packet, false, i, image + i * PS5_NVS_CHUNK);
++		if (ret)
++			return ret;
++	}
++	if (!ps5_reg_valid(image))
++		return -EBADMSG;
++	return ps5_reg_known(image) ? 0 : -EOPNOTSUPP;
++}
++
++static int ps5_rtc_read_correction(s64 *correction)
++{
++	u8 *image, *packet;
++	int ret = -ENOMEM;
++
++	image = kzalloc(PS5_REG_IMAGE, GFP_KERNEL);
++	packet = kzalloc(ICC_MSG_MAX_SIZE, GFP_KERNEL);
++	if (image && packet)
++		ret = ps5_nvs_read_image(packet, image);
++	if (!ret)
++		*correction = (s64)get_unaligned_le64(image + PS5_REG_CORRECTION);
++	kfree_sensitive(packet);
++	kfree_sensitive(image);
++	return ret;
++}
++
++/* Check, re-read, write once (no retries), then verify the read-back. */
++static int ps5_rtc_save_correction(s64 expected, s64 correction)
++{
++	u8 *old, *next, *seen, *packet;
++	unsigned int i;
++	int ret = -ENOMEM;
++
++	old = kzalloc(PS5_REG_IMAGE, GFP_KERNEL);
++	next = kzalloc(PS5_REG_IMAGE, GFP_KERNEL);
++	seen = kzalloc(PS5_REG_IMAGE, GFP_KERNEL);
++	packet = kzalloc(ICC_MSG_MAX_SIZE, GFP_KERNEL);
++	if (!old || !next || !seen || !packet)
++		goto out;
++
++	ret = ps5_nvs_read_image(packet, old);
++	if (ret)
++		goto out;
++	if ((s64)get_unaligned_le64(old + PS5_REG_CORRECTION) != expected) {
++		ret = -ESTALE;
++		goto out;
++	}
++	ret = ps5_reg_update(old, next, correction,
++			     div_u64(ktime_get_real_ns(), NSEC_PER_USEC));
++	if (ret)
++		goto out;
++	ret = ps5_nvs_read_image(packet, seen);
++	if (ret)
++		goto out;
++	if (memcmp(seen, old, PS5_REG_IMAGE)) {
++		ret = -ESTALE;
++		goto out;
++	}
++	for (i = 0; i < PS5_NVS_CHUNKS; i++) {
++		ret = ps5_nvs_chunk(packet, true, i, next + i * PS5_NVS_CHUNK);
++		if (ret)
++			break;
++	}
++	if (!ret) {
++		ret = ps5_nvs_read_image(packet, seen);
++		if (!ret && memcmp(seen, next, PS5_REG_IMAGE))
++			ret = -EIO;
++	}
++out:
++	kfree_sensitive(packet);
++	kfree_sensitive(seen);
++	kfree_sensitive(next);
++	kfree_sensitive(old);
++	return ret;
++}
++
++static int ps5_rtc_read_time(struct device *dev, struct rtc_time *tm)
++{
++	struct ps5_rtc *rtc = ps5_rtc;
++	u32 counter;
++	s64 utc;
++	int ret;
++
++	if (!rtc || !spcie_is_initialized())
++		return -ENODEV;
++	mutex_lock(&rtc->lock);
++	ret = ps5_rtc_counter(&counter);
++	/* The counter only moves forward; a step back means a bad read. */
++	if (!ret && counter < rtc->last)
++		ret = -EINVAL;
++	if (!ret)
++		ret = ps5_rtc_utc(counter, rtc->correction, &utc);
++	if (!ret) {
++		rtc->last = counter;
++		rtc_time64_to_tm(utc, tm);
++	}
++	mutex_unlock(&rtc->lock);
++	return ret;
++}
++
++/* -ENODEV is the one error NTP does not retry. */
++static int ps5_rtc_save_stop(struct device *dev, struct ps5_rtc *rtc, int ret, const char *why)
++{
++	rtc->save_off = true;
++	dev_err(dev, "RTC correction not saved (%s): %d; saving is off until the next boot\n",
++		why, ret);
++	return ret;
++}
++
++static int ps5_rtc_set_time(struct device *dev, struct rtc_time *tm)
++{
++	struct ps5_rtc *rtc = ps5_rtc;
++	s64 correction, delta, readback;
++	u32 counter;
++	int ret;
++
++	if (!rtc || !spcie_is_initialized())
++		return -ENODEV;
++	mutex_lock(&rtc->lock);
++	ret = -ENODEV;
++	if (rtc->save_off)
++		goto out;
++	/* Counter errors do not stop saving. */
++	ret = ps5_rtc_counter(&counter);
++	if (!ret && counter < rtc->last)
++		ret = -EINVAL;
++	if (ret)
++		goto out;
++	rtc->last = counter;
++	correction = rtc_tm_to_time64(tm) - ((s64)counter + PS5_RTC_EPOCH);
++	delta = correction - rtc->correction;
++	if (delta > -PS5_RTC_MIN_CHANGE && delta < PS5_RTC_MIN_CHANGE)
++		goto out;
++
++	/* A week or more is a bad time source: refuse. */
++	if (delta <= -PS5_RTC_MAX_STEP || delta >= PS5_RTC_MAX_STEP ||
++	    !ps5_rtc_correction_ok(correction)) {
++		if (!rtc->step_logged)
++			dev_warn(dev, "RTC correction not saved: %+lld s is too far from the stored one\n",
++				 delta);
++		rtc->step_logged = true;
++		ret = -ERANGE;
++		goto out;
++	}
++	if (rtc->saves >= PS5_RTC_MAX_SAVES) {
++		ret = ps5_rtc_save_stop(dev, rtc, -ENODEV, "save limit for this boot");
++		goto out;
++	}
++	if (!ps5_rtc_correction_ok(rtc->correction) || !ps5_rtc_sane(counter, rtc->correction)) {
++		ret = ps5_rtc_save_stop(dev, rtc, -ENODEV, "stored value is not a correction");
++		goto out;
++	}
++
++	ret = ps5_rtc_save_correction(rtc->correction, correction);
++	if (!ret) {
++		rtc->correction = correction;
++		rtc->saves++;
++		dev_info(dev, "RTC correction saved (%+lld s)\n", delta);
++	} else {
++		ps5_rtc_save_stop(dev, rtc, ret, "save failed");
++		/* Keep reads in step with whatever NVS now holds. */
++		if (!ps5_rtc_read_correction(&readback) && ps5_rtc_correction_ok(readback))
++			rtc->correction = readback;
++	}
++out:
++	mutex_unlock(&rtc->lock);
++	return ret;
++}
++
++static const struct rtc_class_ops ps5_rtc_ops = {
++	.read_time = ps5_rtc_read_time,
++	.set_time = ps5_rtc_set_time,
++};
++
++static const struct rtc_class_ops ps5_rtc_ro_ops = {
++	.read_time = ps5_rtc_read_time,
++};
++
++static void ps5_rtc_clear(void *data)
++{
++	ps5_rtc = NULL;
++}
++
++/* Called by spcie once BARs and ICC are up; failure only means no RTC. */
++int ps5_rtc_register(struct pci_dev *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct rtc_device *rtcdev;
++	struct ps5_rtc *rtc;
++	bool writable = allow_write;
++	void *group;
++	int ret;
++
++	if (!enable)
++		return 0;
++	/* Verified on base PS5 Salina/Salina2 (PCI revision 1) only. */
++	if (pdev->revision != 1)
++		return -ENODEV;
++	group = devres_open_group(dev, NULL, GFP_KERNEL);
++	if (!group)
++		return -ENOMEM;
++	ret = -ENOMEM;
++	rtc = devm_kzalloc(dev, sizeof(*rtc), GFP_KERNEL);
++	if (!rtc)
++		goto fail;
++	mutex_init(&rtc->lock);
++	/* Runs after the RTC is unregistered, before @rtc is freed. */
++	ret = devm_add_action(dev, ps5_rtc_clear, NULL);
++	if (ret)
++		goto fail;
++	ret = ps5_rtc_read_correction(&rtc->correction);
++	if (ret == -EOPNOTSUPP)
++		dev_notice(dev, "RTC not registered: registry format not recognised\n");
++	if (ret) {
++		dev_err_probe(dev, ret, "RTC correction unavailable\n");
++		goto fail;
++	}
++	ret = ps5_rtc_counter(&rtc->last);
++	if (!ret && !ps5_rtc_sane(rtc->last, rtc->correction))
++		ret = -ERANGE;
++	if (ret) {
++		dev_err_probe(dev, ret, "RTC counter or correction unusable\n");
++		goto fail;
++	}
++	if (writable && !ps5_rtc_correction_ok(rtc->correction)) {
++		dev_notice(dev, "RTC stored value is not a correction; registering read-only\n");
++		writable = false;
++	}
++
++	rtcdev = devm_rtc_allocate_device(dev);
++	if (IS_ERR(rtcdev)) {
++		ret = PTR_ERR(rtcdev);
++		goto fail;
++	}
++	rtcdev->ops = writable ? &ps5_rtc_ops : &ps5_rtc_ro_ops;
++	rtcdev->range_min = PS5_RTC_MIN_UTC;
++	rtcdev->range_max = PS5_RTC_MAX_UTC;
++	clear_bit(RTC_FEATURE_ALARM, rtcdev->features);
++	clear_bit(RTC_FEATURE_UPDATE_INTERRUPT, rtcdev->features);
++	ps5_rtc = rtc;
++	ret = devm_rtc_register_device(rtcdev);
++	if (ret)
++		goto fail;
++	devres_close_group(dev, group);
++	ps5_rtc_group = group;
++	dev_info(dev, "RTC registered (%s)\n", writable ? "read-write" : "read-only");
++	dev_dbg(dev, "RTC correction %lld s\n", rtc->correction);
++	return 0;
++
++fail:
++	devres_release_group(dev, group);
++	return ret;
++}
++
++/* Called by spcie before it stops ICC; waits for any running read or save. */
++void ps5_rtc_unregister(struct pci_dev *pdev)
++{
++	void *group = ps5_rtc_group;
++
++	if (!group)
++		return;
++	ps5_rtc_group = NULL;
++	devres_release_group(&pdev->dev, group);
++}
 diff --git a/drivers/ps5/spcie.c b/drivers/ps5/spcie.c
 new file mode 100644
-index 000000000000..375c83d7ac09
+index 000000000000..3a8ed5a79eb3
 --- /dev/null
 +++ b/drivers/ps5/spcie.c
-@@ -0,0 +1,1011 @@
+@@ -0,0 +1,1016 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +
 +#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -16848,6 +17358,8 @@ index 000000000000..375c83d7ac09
 +	spcie_initialized = true;
 +
 +	pci_set_drvdata(pdev, sdev);
++
++	ps5_rtc_register(pdev);
 +	return 0;
 +}
 +
@@ -16855,6 +17367,8 @@ index 000000000000..375c83d7ac09
 +{
 +	struct spcie_dev *sdev = pci_get_drvdata(pdev);
 +	if (sdev) {
++		/* The RTC uses ICC: stop it first. */
++		ps5_rtc_unregister(pdev);
 +		WRITE_ONCE(spcie_initialized, false);
 +		spcie_icc_remove(sdev);
 +		icc_dev = NULL;
@@ -16866,6 +17380,7 @@ index 000000000000..375c83d7ac09
 +{
 +	struct spcie_dev *sdev = pci_get_drvdata(pdev);
 +	if (sdev) {
++		ps5_rtc_unregister(pdev);
 +		spcie_icc_shutdown(sdev);
 +	}
 +}
@@ -18928,10 +19443,10 @@ index fbb62f7c3111..18edd8279773 100644
  extern void dmi_setup(void);
 diff --git a/include/linux/ps5.h b/include/linux/ps5.h
 new file mode 100755
-index 000000000000..4f36874aff07
+index 000000000000..34a1e086ef55
 --- /dev/null
 +++ b/include/linux/ps5.h
-@@ -0,0 +1,277 @@
+@@ -0,0 +1,281 @@
 +/* SPDX-License-Identifier: GPL-2.0-only */
 +
 +#ifndef _LINUX_PS5_H
@@ -18996,6 +19511,10 @@ index 000000000000..4f36874aff07
 +u32 spcie_pervasive0_4000_read(u32 reg);
 +
 +int icc_query(u8 *query, u8 *reply);
++
++struct pci_dev;
++int ps5_rtc_register(struct pci_dev *pdev);
++void ps5_rtc_unregister(struct pci_dev *pdev);
 +
 +void hdmiSystemResume(void);
 +int sceHdmiInitVideoConfig(void);
