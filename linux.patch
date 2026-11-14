@@ -1580,7 +1580,7 @@ index 08ed1eb69558..71d9e999fdc9 100644
  	if (amdgpu_read_platform_bios(adev)) {
  		dev_info(adev->dev, "Fetched VBIOS from platform\n");
 diff --git a/drivers/gpu/drm/amd/amdgpu/amdgpu_device.c b/drivers/gpu/drm/amd/amdgpu/amdgpu_device.c
-index 9269e780feb7..45b417fc71b9 100644
+index 9269e780feb7..f3abc19636cf 100644
 --- a/drivers/gpu/drm/amd/amdgpu/amdgpu_device.c
 +++ b/drivers/gpu/drm/amd/amdgpu/amdgpu_device.c
 @@ -1855,6 +1855,26 @@ static int amdgpu_device_parse_gpu_info_fw(struct amdgpu_device *adev)
@@ -1651,6 +1651,19 @@ index 9269e780feb7..45b417fc71b9 100644
  	spin_lock_init(&adev->mm_stats.lock);
  	spin_lock_init(&adev->virt.rlcg_reg_lock);
  	spin_lock_init(&adev->wb.lock);
+@@ -4897,6 +4937,12 @@ bool amdgpu_device_should_recover_gpu(struct amdgpu_device *adev)
+ 	if (amdgpu_gpu_recovery == 0)
+ 		goto disabled;
+ 
++#ifdef CONFIG_X86_PS5
++	/* No PSP/SMU reset on PS5; only per-queue reset works. */
++	if (amdgpu_gpu_recovery == -1 && adev->asic_type == CHIP_CYAN_SKILLFISH)
++		goto disabled;
++#endif
++
+ 	/* Skip soft reset check in fatal error mode */
+ 	if (!amdgpu_ras_is_poison_mode_supported(adev))
+ 		return true;
 diff --git a/drivers/gpu/drm/amd/amdgpu/amdgpu_discovery.c b/drivers/gpu/drm/amd/amdgpu/amdgpu_discovery.c
 index 7ab2ad2c5ba9..cd16717fdc9e 100644
 --- a/drivers/gpu/drm/amd/amdgpu/amdgpu_discovery.c
