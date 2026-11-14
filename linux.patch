@@ -3279,7 +3279,7 @@ index 47a0ff2ed035..153e9b8f46d9 100644
  		 * TODO: Check VSDB bits to decide whether this should
  		 * be enabled or not.
 diff --git a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_connector.c b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_connector.c
-index 45a69bf43971..cf1376b027ce 100644
+index 45a69bf43971..94772dab70d8 100644
 --- a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_connector.c
 +++ b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_connector.c
 @@ -78,6 +78,22 @@
@@ -3736,7 +3736,7 @@ index 45a69bf43971..cf1376b027ce 100644
  	return 0;
  }
  
-@@ -3109,6 +3428,49 @@ STATIC_IFN_KUNIT void amdgpu_dm_connector_add_freesync_modes(struct drm_connecto
+@@ -3109,6 +3428,62 @@ STATIC_IFN_KUNIT void amdgpu_dm_connector_add_freesync_modes(struct drm_connecto
  }
  EXPORT_IF_KUNIT(amdgpu_dm_connector_add_freesync_modes);
  
@@ -3751,14 +3751,21 @@ index 45a69bf43971..cf1376b027ce 100644
 +	return a->clock > b->clock;
 +}
 +
-+/* Keep a stock mode preferred when one passes validation. */
++/* Prefer the largest stock mode that fits the EDID's native size. */
 +static void dm_ps5_set_preferred_mode(struct drm_connector *connector)
 +{
-+	struct drm_display_mode *mode, *best = NULL;
++	struct drm_display_mode *mode, *best = NULL, *fit = NULL, *native = NULL;
 +	bool preferred = false;
 +
 +	if (getHdmiExtendedModes() != 1)
 +		return;
++
++	list_for_each_entry(mode, &connector->probed_modes, head) {
++		if (mode->type & DRM_MODE_TYPE_PREFERRED) {
++			native = mode;
++			break;
++		}
++	}
 +
 +	list_for_each_entry(mode, &connector->probed_modes, head) {
 +		if (!isHdmiModeStock(mode) ||
@@ -3768,10 +3775,16 @@ index 45a69bf43971..cf1376b027ce 100644
 +			preferred = true;
 +		if (!best || dm_ps5_mode_larger(mode, best))
 +			best = mode;
++		if (native && mode->hdisplay <= native->hdisplay &&
++		    mode->vdisplay <= native->vdisplay &&
++		    (!fit || dm_ps5_mode_larger(mode, fit)))
++			fit = mode;
 +	}
 +
 +	if (!best)
 +		return;
++	if (fit)
++		best = fit;
 +
 +	list_for_each_entry(mode, &connector->probed_modes, head) {
 +		if (!isHdmiModeStock(mode))
@@ -3786,7 +3799,7 @@ index 45a69bf43971..cf1376b027ce 100644
  static int amdgpu_dm_connector_get_modes(struct drm_connector *connector)
  {
  	struct amdgpu_dm_connector *amdgpu_dm_connector =
-@@ -3143,6 +3505,10 @@ static int amdgpu_dm_connector_get_modes(struct drm_connector *connector)
+@@ -3143,6 +3518,10 @@ static int amdgpu_dm_connector_get_modes(struct drm_connector *connector)
  		if (encoder)
  			amdgpu_dm_connector_add_common_modes(encoder, connector);
  		amdgpu_dm_connector_add_freesync_modes(connector, drm_edid);
@@ -3797,7 +3810,7 @@ index 45a69bf43971..cf1376b027ce 100644
  	}
  	amdgpu_dm_fbc_init(connector);
  
-@@ -3299,6 +3665,12 @@ void amdgpu_dm_connector_init_helper(struct amdgpu_display_manager *dm,
+@@ -3299,6 +3678,12 @@ void amdgpu_dm_connector_init_helper(struct amdgpu_display_manager *dm,
  		/* Content Type is currently only implemented for HDMI. */
  		drm_connector_attach_content_type_property(&aconnector->base);
  	}
@@ -3810,7 +3823,7 @@ index 45a69bf43971..cf1376b027ce 100644
  
  	if (connector_type == DRM_MODE_CONNECTOR_HDMIA) {
  		if (!drm_mode_create_hdmi_colorspace_property(&aconnector->base, supported_colorspaces))
-@@ -3618,6 +3990,41 @@ void dm_restore_drm_connector_state(struct drm_device *dev,
+@@ -3618,6 +4003,41 @@ void dm_restore_drm_connector_state(struct drm_device *dev,
  		dm_force_atomic_commit(&aconnector->base);
  }
  
