@@ -206,7 +206,7 @@ index dc1afd5c839d..745db92fb2c1 100644
  	[VM_SHARED | VM_EXEC | VM_WRITE]		= PAGE_SHARED_EXEC,
  	[VM_SHARED | VM_EXEC | VM_WRITE | VM_READ]	= PAGE_SHARED_EXEC
 diff --git a/arch/x86/pci/common.c b/arch/x86/pci/common.c
-index 63105b29fbf5..f38e2601531c 100644
+index 63105b29fbf5..c946804086ac 100644
 --- a/arch/x86/pci/common.c
 +++ b/arch/x86/pci/common.c
 @@ -57,14 +57,100 @@ int raw_pci_write(unsigned int domain, unsigned int bus, unsigned int devfn,
@@ -236,7 +236,7 @@ index 63105b29fbf5..f38e2601531c 100644
 +		raw_pci_write(domain, bus, 0, 0xd00, 4, (busno << 24) | (slot << 19) | (func << 16) | (reg & 0xf80));
 +		return raw_pci_read(domain, bus, 0, (reg & 0x7f) | 0xf00, len, val);
 +	} else {
-+		panic("wrong bus number");
++		return -EINVAL;
 +	}
 +}
 +
@@ -260,7 +260,7 @@ index 63105b29fbf5..f38e2601531c 100644
 +		raw_pci_write(domain, bus, 0, 0xd00, 4, (busno << 24) | (slot << 19) | (func << 16) | (reg & 0xf80));
 +		return raw_pci_write(domain, bus, 0, (reg & 0x7f) | 0xf00, len, val);
 +	} else {
-+		panic("wrong bus number");
++		return -EINVAL;
 +	}
 +}
 +#endif
@@ -531,7 +531,7 @@ index b96025abd45e..654ccbee2943 100644
  obj-$(CONFIG_PDC_ADMA)		+= pdc_adma.o
 diff --git a/drivers/ata/ahci_salina.c b/drivers/ata/ahci_salina.c
 new file mode 100644
-index 000000000000..c020194eb44a
+index 000000000000..30a95ce6eb86
 --- /dev/null
 +++ b/drivers/ata/ahci_salina.c
 @@ -0,0 +1,340 @@
@@ -651,7 +651,7 @@ index 000000000000..c020194eb44a
 +	struct salina_ahci *sa;
 +	unsigned int abar, n_ports;
 +	u32 chip_id;
-+	u8 state;
++	u8 state = 0;
 +	int rc;
 +
 +	if (!spcie_is_initialized()) {
@@ -759,7 +759,10 @@ index 000000000000..c020194eb44a
 +		 "Salina SATA up (chip %#x, devid %#x, BAR%u, port_off %#x, %u ports)\n",
 +		 sa->phy.chip_id, sa->phy.devid, abar, sa->phy.port_off, n_ports);
 +
-+	return ahci_host_activate(host, &salina_ahci_sht);
++	rc = ahci_host_activate(host, &salina_ahci_sht);
++	if (rc)
++		goto err_glue;
++	return 0;
 +
 +err_glue:
 +	salina_glue_unmap(sa);
@@ -791,7 +794,6 @@ index 000000000000..c020194eb44a
 +	struct ahci_host_priv *hpriv;
 +	void __iomem *mmio;
 +	u32 ctl;
-+	int rc;
 +
 +	if (!host)
 +		return 0;
@@ -804,9 +806,7 @@ index 000000000000..c020194eb44a
 +	writel(ctl, mmio + HOST_CTL);
 +	readl(mmio + HOST_CTL);
 +
-+	rc = ata_host_suspend(host, PMSG_SUSPEND);
-+	if (rc)
-+		return rc;
++	ata_host_suspend(host, PMSG_SUSPEND);
 +
 +	pci_save_state(pdev);
 +	pci_set_power_state(pdev, PCI_D3hot);
@@ -1116,7 +1116,7 @@ index 000000000000..39cc76f39e06
 +
 +#endif
 diff --git a/drivers/bluetooth/btusb.c b/drivers/bluetooth/btusb.c
-index dc7191bf4234..80e47029b1a3 100644
+index dc7191bf4234..8ba86cfc8c11 100644
 --- a/drivers/bluetooth/btusb.c
 +++ b/drivers/bluetooth/btusb.c
 @@ -69,6 +69,11 @@ static struct usb_driver btusb_driver;
@@ -1190,7 +1190,7 @@ index dc7191bf4234..80e47029b1a3 100644
  	int (*recv_acl)(struct hci_dev *hdev, struct sk_buff *skb);
  	int (*recv_bulk)(struct btusb_data *data, void *buffer, int count);
  
-@@ -1291,6 +1320,107 @@ static int btusb_recv_event(struct hci_dev *hdev, struct sk_buff *skb)
+@@ -1291,6 +1320,109 @@ static int btusb_recv_event(struct hci_dev *hdev, struct sk_buff *skb)
  	return data->recv_event(hdev, skb);
  }
  
@@ -1225,8 +1225,10 @@ index dc7191bf4234..80e47029b1a3 100644
 +	struct btusb_data *data = container_of(work, struct btusb_data,
 +					       ps5_lk_work);
 +
-+	if (hci_cmd_sync_submit(data->hdev, btusb_ps5_iw620_lk_sync, NULL, NULL))
++	if (hci_cmd_sync_submit(data->hdev, btusb_ps5_iw620_lk_sync, NULL, NULL)) {
 +		bt_dev_err(data->hdev, "PS5 IW620: could not queue link key reply");
++		memzero_explicit(data->ps5_lk.link_key, sizeof(data->ps5_lk.link_key));
++	}
 +}
 +
 +static int btusb_recv_event_ps5_iw620(struct hci_dev *hdev, struct sk_buff *skb)
@@ -1298,7 +1300,7 @@ index dc7191bf4234..80e47029b1a3 100644
  static int btusb_recv_intr(struct btusb_data *data, void *buffer, int count)
  {
  	struct sk_buff *skb;
-@@ -3035,7 +3165,8 @@ static int btusb_mtk_setup(struct hci_dev *hdev)
+@@ -3035,7 +3167,8 @@ static int btusb_mtk_setup(struct hci_dev *hdev)
  	btmtk_data->reset_sync = btusb_mtk_reset;
  
  	/* Claim ISO data interface and endpoint */
@@ -1308,7 +1310,7 @@ index dc7191bf4234..80e47029b1a3 100644
  		btmtk_data->isopkt_intf = usb_ifnum_to_if(data->udev, MTK_ISO_IFNUM);
  		btusb_mtk_claim_iso_intf(data);
  	}
-@@ -4183,6 +4314,23 @@ static struct hci_drv btusb_hci_drv = {
+@@ -4183,6 +4316,23 @@ static struct hci_drv btusb_hci_drv = {
  	.specific_handlers	= btusb_hci_drv_specific_handlers,
  };
  
@@ -1332,7 +1334,7 @@ index dc7191bf4234..80e47029b1a3 100644
  static int btusb_probe(struct usb_interface *intf,
  		       const struct usb_device_id *id)
  {
-@@ -4209,6 +4357,15 @@ static int btusb_probe(struct usb_interface *intf,
+@@ -4209,6 +4359,15 @@ static int btusb_probe(struct usb_interface *intf,
  			id = match;
  	}
  
@@ -1348,7 +1350,7 @@ index dc7191bf4234..80e47029b1a3 100644
  	if (id->driver_info & BTUSB_IGNORE)
  		return -ENODEV;
  
-@@ -4233,6 +4390,13 @@ static int btusb_probe(struct usb_interface *intf,
+@@ -4233,6 +4392,13 @@ static int btusb_probe(struct usb_interface *intf,
  	if (err)
  		goto err_free_data;
  
@@ -1362,7 +1364,7 @@ index dc7191bf4234..80e47029b1a3 100644
  	if (id->driver_info & BTUSB_AMP) {
  		data->cmdreq_type = USB_TYPE_CLASS | 0x01;
  		data->cmdreq = 0x2b;
-@@ -4490,6 +4654,19 @@ static int btusb_probe(struct usb_interface *intf,
+@@ -4490,6 +4656,19 @@ static int btusb_probe(struct usb_interface *intf,
  	if (id->driver_info & BTUSB_INVALID_LE_STATES)
  		hci_set_quirk(hdev, HCI_QUIRK_BROKEN_LE_STATES);
  
@@ -1382,7 +1384,7 @@ index dc7191bf4234..80e47029b1a3 100644
  	if (id->driver_info & BTUSB_BROKEN_EXT_SCAN)
  		hci_set_quirk(hdev, HCI_QUIRK_BROKEN_EXT_SCAN);
  
-@@ -4549,7 +4726,7 @@ static int btusb_probe(struct usb_interface *intf,
+@@ -4549,7 +4728,7 @@ static int btusb_probe(struct usb_interface *intf,
  			data->diag = NULL;
  	}
  
@@ -1391,14 +1393,14 @@ index dc7191bf4234..80e47029b1a3 100644
  		usb_enable_autosuspend(data->udev);
  
  	data->poll_sync = enable_poll_sync;
-@@ -4614,6 +4791,7 @@ static void btusb_disconnect(struct usb_interface *intf)
- 	if (data->disconnect)
+@@ -4615,6 +4794,7 @@ static void btusb_disconnect(struct usb_interface *intf)
  		data->disconnect(hdev);
  
-+	cancel_work_sync(&data->ps5_lk_work);
  	hci_unregister_dev(hdev);
++	cancel_work_sync(&data->ps5_lk_work);
  
  	if (data->oob_wake_irq) {
+ 		device_init_wakeup(&data->udev->dev, false);
 diff --git a/drivers/firmware/dmi-id.c b/drivers/firmware/dmi-id.c
 index 477a37e2ef80..e1af70946c89 100644
 --- a/drivers/firmware/dmi-id.c
@@ -1580,7 +1582,7 @@ index 08ed1eb69558..71d9e999fdc9 100644
  	if (amdgpu_read_platform_bios(adev)) {
  		dev_info(adev->dev, "Fetched VBIOS from platform\n");
 diff --git a/drivers/gpu/drm/amd/amdgpu/amdgpu_device.c b/drivers/gpu/drm/amd/amdgpu/amdgpu_device.c
-index 9269e780feb7..f3abc19636cf 100644
+index 9269e780feb7..66b976cc018b 100644
 --- a/drivers/gpu/drm/amd/amdgpu/amdgpu_device.c
 +++ b/drivers/gpu/drm/amd/amdgpu/amdgpu_device.c
 @@ -1855,6 +1855,26 @@ static int amdgpu_device_parse_gpu_info_fw(struct amdgpu_device *adev)
@@ -1610,7 +1612,7 @@ index 9269e780feb7..f3abc19636cf 100644
  		chip_name = "cyan_skillfish";
  		break;
  	}
-@@ -3722,6 +3742,17 @@ static int amdgpu_device_sys_interface_init(struct amdgpu_device *adev)
+@@ -3722,6 +3742,18 @@ static int amdgpu_device_sys_interface_init(struct amdgpu_device *adev)
  	amdgpu_uma_sysfs_init(adev);
  	amdgpu_ptl_sysfs_init(adev);
  
@@ -1620,7 +1622,8 @@ index 9269e780feb7..f3abc19636cf 100644
 +	    (!amdgpu_is_viola(adev) || amdgpu_ps5_viola_fw(adev))) {
 +		adev->ps5_gpufreq = ps5_gpufreq_register(adev->dev,
 +							 amdgpu_fence_ps5_busy_ns);
-+		if (amdgpu_ps5_sensors_init(adev))
++		/* With the Viola SMU, amdgpu pm already has them. */
++		if (!adev->pm.sysfs_initialized && amdgpu_ps5_sensors_init(adev))
 +			dev_warn(adev->dev, "PS5 GPU sensors unavailable\n");
 +	}
 +#endif
@@ -1628,7 +1631,7 @@ index 9269e780feb7..f3abc19636cf 100644
  	return r;
  }
  
-@@ -3742,6 +3773,12 @@ static void amdgpu_device_sys_interface_fini(struct amdgpu_device *adev)
+@@ -3742,6 +3774,12 @@ static void amdgpu_device_sys_interface_fini(struct amdgpu_device *adev)
  	amdgpu_xcp_sysfs_fini(adev);
  	amdgpu_uma_sysfs_fini(adev);
  	amdgpu_ptl_sysfs_fini(adev);
@@ -1641,7 +1644,7 @@ index 9269e780feb7..f3abc19636cf 100644
  }
  
  static bool
-@@ -3848,6 +3885,9 @@ int amdgpu_device_init(struct amdgpu_device *adev,
+@@ -3848,6 +3886,9 @@ int amdgpu_device_init(struct amdgpu_device *adev,
  		return r;
  
  	spin_lock_init(&adev->mmio_idx_lock);
@@ -1651,7 +1654,7 @@ index 9269e780feb7..f3abc19636cf 100644
  	spin_lock_init(&adev->mm_stats.lock);
  	spin_lock_init(&adev->virt.rlcg_reg_lock);
  	spin_lock_init(&adev->wb.lock);
-@@ -4897,6 +4937,12 @@ bool amdgpu_device_should_recover_gpu(struct amdgpu_device *adev)
+@@ -4897,6 +4938,12 @@ bool amdgpu_device_should_recover_gpu(struct amdgpu_device *adev)
  	if (amdgpu_gpu_recovery == 0)
  		goto disabled;
  
@@ -2491,7 +2494,7 @@ index 00798d80479f..621df344abca 100644
  		for (j = 0; j < adev->gfx.config.max_sh_per_se; j++) {
  			bitmap = i * adev->gfx.config.max_sh_per_se + j;
 diff --git a/drivers/gpu/drm/amd/amdgpu/gmc_v10_0.c b/drivers/gpu/drm/amd/amdgpu/gmc_v10_0.c
-index c70657bc089b..316abfd84953 100644
+index c70657bc089b..6cebe353ff94 100644
 --- a/drivers/gpu/drm/amd/amdgpu/gmc_v10_0.c
 +++ b/drivers/gpu/drm/amd/amdgpu/gmc_v10_0.c
 @@ -232,12 +232,14 @@ static bool gmc_v10_0_get_atc_vmid_pasid_mapping_info(
@@ -2552,20 +2555,19 @@ index c70657bc089b..316abfd84953 100644
  /**
   * gmc_v10_0_flush_gpu_tlb_pasid - tlb flush via pasid
   *
-@@ -334,7 +352,11 @@ static void gmc_v10_0_flush_gpu_tlb_pasid(struct amdgpu_device *adev,
+@@ -334,7 +352,10 @@ static void gmc_v10_0_flush_gpu_tlb_pasid(struct amdgpu_device *adev,
  					  bool all_hub, uint32_t inst)
  {
  	uint16_t queried;
 -	int vmid, i;
 +	int vmid, i, matched = 0;
++	/* Every GFX1013 device: hw_init turns off KIQ PASID flushes for all. */
 +	bool gfx1013_pasid_path =
-+		(adev->pdev->device == 0x13FE || adev->pdev->device == 0x13DB ||
-+		 adev->pdev->device == 0x13FB) &&
 +		amdgpu_ip_version(adev, GC_HWIP, 0) == IP_VERSION(10, 1, 3);
  
  	for (vmid = 1; vmid < AMDGPU_NUM_VMID; vmid++) {
  		bool valid;
-@@ -343,17 +365,45 @@ static void gmc_v10_0_flush_gpu_tlb_pasid(struct amdgpu_device *adev,
+@@ -343,17 +364,45 @@ static void gmc_v10_0_flush_gpu_tlb_pasid(struct amdgpu_device *adev,
  								  &queried);
  		if (!valid || queried != pasid)
  			continue;
@@ -2615,7 +2617,7 @@ index c70657bc089b..316abfd84953 100644
  }
  
  static uint64_t gmc_v10_0_emit_flush_gpu_tlb(struct amdgpu_ring *ring,
-@@ -960,7 +1010,21 @@ static int gmc_v10_0_hw_init(struct amdgpu_ip_block *ip_block)
+@@ -960,7 +1009,21 @@ static int gmc_v10_0_hw_init(struct amdgpu_ip_block *ip_block)
  	struct amdgpu_device *adev = ip_block->adev;
  	int r;
  
@@ -5660,10 +5662,10 @@ index 000000000000..119cdcd49a63
 +#endif /* _MTS_H */
 diff --git a/drivers/net/phy/mts/mts_main.c b/drivers/net/phy/mts/mts_main.c
 new file mode 100644
-index 000000000000..70f6c970b955
+index 000000000000..d32938ab597d
 --- /dev/null
 +++ b/drivers/net/phy/mts/mts_main.c
-@@ -0,0 +1,876 @@
+@@ -0,0 +1,882 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * PlayStation 5 Gigabit Ethernet driver
@@ -6100,8 +6102,14 @@ index 000000000000..70f6c970b955
 +	gbe_clr(p, GBE_REG_MODE, GBE_MODE_PROMISC);
 +
 +	if (dev->flags & IFF_ALLMULTI) {
-+		for (i = 0; i < GBE_MC_HASH_BITS; i++)
++		for (i = 0; i < GBE_MC_HASH_BITS; i++) {
 +			gbe_wr(p, GBE_REG_MC_HASH, GBE_MC_HASH_SET | i);
++			if (readl_poll_timeout_atomic(p->base + GBE_REG_MC_HASH, val,
++						      !(val & GBE_MC_HASH_BUSY), 1, 10000)) {
++				netdev_warn(dev, "mc hash set timeout\n");
++				break;
++			}
++		}
 +		return;
 +	}
 +
@@ -8945,10 +8953,10 @@ index 000000000000..1c9a01262122
 +#endif /* _AUTOSERVO_PARAM_H */
 diff --git a/drivers/ps5/buzzer.c b/drivers/ps5/buzzer.c
 new file mode 100644
-index 000000000000..5a53c5f719bc
+index 000000000000..277b122fdc5c
 --- /dev/null
 +++ b/drivers/ps5/buzzer.c
-@@ -0,0 +1,304 @@
+@@ -0,0 +1,312 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +
 +#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -8964,6 +8972,7 @@ index 000000000000..5a53c5f719bc
 +#include <linux/delay.h>
 +#include <linux/kthread.h>
 +#include <linux/mutex.h>
++#include <linux/sched/task.h>
 +#include <linux/device.h>
 +#include <linux/workqueue.h>
 +#include <linux/atomic.h>
@@ -9067,14 +9076,21 @@ index 000000000000..5a53c5f719bc
 +	return 0;
 +}
 +
++/* play_fn takes play_lock to exit, so stop it without holding it. */
 +static int play_stop(void)
 +{
++	struct task_struct *t;
++
 +	mutex_lock(&play_lock);
-+	if (play_thread) {
-+		kthread_stop(play_thread);
-+		play_thread = NULL;
-+	}
++	t = play_thread;
++	if (t)
++		get_task_struct(t);
 +	mutex_unlock(&play_lock);
++
++	if (t) {
++		kthread_stop(t);
++		put_task_struct(t);
++	}
 +	return 0;
 +}
 +
@@ -10442,10 +10458,10 @@ index 000000000000..73602117b1ca
 +}
 diff --git a/drivers/ps5/gpufreq.c b/drivers/ps5/gpufreq.c
 new file mode 100644
-index 000000000000..80953514df04
+index 000000000000..aaa2b8a04f3f
 --- /dev/null
 +++ b/drivers/ps5/gpufreq.c
-@@ -0,0 +1,308 @@
+@@ -0,0 +1,315 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * PS5 GPU clock scaling via SMU RequestGfxclk; amdgpu supplies busy time.
@@ -10492,6 +10508,7 @@ index 000000000000..80953514df04
 +	int limit;		/* thermal limit, MHz */
 +	int max_mhz;
 +	int mhz;		/* clock set, 0 if unknown */
++	unsigned int seq;	/* ps5_mp1_gfxclk_seq() for mhz */
 +	bool opp_only;		/* SMU rejected a clock between OPPs */
 +	bool stopped;
 +};
@@ -10540,9 +10557,15 @@ index 000000000000..80953514df04
 +{
 +	int want = gf->want / HZ_PER_MHZ;
 +	int mhz = min(want, gf->limit);
++	unsigned int seq = ps5_mp1_gfxclk_seq();
 +	int ret;
 +
 +	lockdep_assert_held(&gf->lock);
++	/* Boost changed the clock: set it again. */
++	if (gf->seq != seq) {
++		gf->seq = seq;
++		gf->mhz = 0;
++	}
 +	if (gf->opp_only && mhz < want) {
 +		unsigned long f = mhz * HZ_PER_MHZ;
 +		struct dev_pm_opp *opp = dev_pm_opp_find_freq_floor(gf->dev, &f);
@@ -14321,14 +14344,15 @@ index 000000000000..a234788e9990
 +#endif
 diff --git a/drivers/ps5/mp1.c b/drivers/ps5/mp1.c
 new file mode 100644
-index 000000000000..da5368c70664
+index 000000000000..22130067c67e
 --- /dev/null
 +++ b/drivers/ps5/mp1.c
-@@ -0,0 +1,881 @@
+@@ -0,0 +1,894 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +
 +#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 +
++#include <linux/atomic.h>
 +#include <linux/module.h>
 +#include <linux/miscdevice.h>
 +#include <linux/mutex.h>
@@ -14768,17 +14792,15 @@ index 000000000000..da5368c70664
 +static u32 pcirc_smn_read(u32 reg)
 +{
 +	u32 val = 0;
-+	if (amd_smn_read(0, reg, &val)) {
-+		panic("amd_smn_read failed");
-+	}
++	if (amd_smn_read(0, reg, &val))
++		pr_err_ratelimited("smn read %#x failed\n", reg);
 +	return val;
 +}
 +
 +static void pcirc_smn_write(u32 reg, u32 val)
 +{
-+	if (amd_smn_write(0, reg, val)) {
-+		panic("amd_smn_write failed");
-+	}
++	if (amd_smn_write(0, reg, val))
++		pr_err_ratelimited("smn write %#x failed\n", reg);
 +}
 +
 +/* init, amdgpu, gpufreq, sleep and ioctls all send: one at a time. */
@@ -15125,8 +15147,18 @@ index 000000000000..da5368c70664
 +}
 +EXPORT_SYMBOL(ps5_mp1_viola_init);
 +
++/* Boost moves the GPU clock behind ps5-gpufreq. */
++static atomic_t mp1_gfxclk_seq;
++
++unsigned int ps5_mp1_gfxclk_seq(void)
++{
++	return atomic_read(&mp1_gfxclk_seq);
++}
++
 +static long mp1_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 +{
++	int ret;
++
 +	switch (cmd) {
 +	case MP1_BOOST_ENTER:
 +	{
@@ -15136,11 +15168,15 @@ index 000000000000..da5368c70664
 +		params[2] = (GPU_MHZ_MIN << 16) | CPU_MHZ_MIN;
 +		params[3] = (GPU_MHZ_MAX << 16) | CPU_MHZ_MAX;
 +		params[4] = 0x25c6a3c8;
-+		return mp1_universal_mode_enter(params);
++		ret = mp1_universal_mode_enter(params);
++		atomic_inc(&mp1_gfxclk_seq);
++		return ret;
 +	}
 +
 +	case MP1_BOOST_EXIT:
-+		return mp1_universal_mode_exit();
++		ret = mp1_universal_mode_exit();
++		atomic_inc(&mp1_gfxclk_seq);
++		return ret;
 +
 +	case MP1_GET_SMU_VERSION:
 +		return mp1_query(arg, PPSMC_MSG_GetSmuVersion);
@@ -16703,10 +16739,10 @@ index 000000000000..69a4552233a9
 +}
 diff --git a/drivers/ps5/spcie.c b/drivers/ps5/spcie.c
 new file mode 100644
-index 000000000000..3a8ed5a79eb3
+index 000000000000..6c0538057ba3
 --- /dev/null
 +++ b/drivers/ps5/spcie.c
-@@ -0,0 +1,1016 @@
+@@ -0,0 +1,1090 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +
 +#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -16763,9 +16799,12 @@ index 000000000000..3a8ed5a79eb3
 +	u16 icc_send_xtn_id;
 +	u8 notification[ICC_MSG_MAX_SIZE];
 +	u16 notification_length;
++	spinlock_t reply_lock;	/* reply, reply_length, reply_ready */
 +	u8 reply[ICC_MSG_MAX_SIZE];
 +	u16 reply_length;
 +	bool reply_ready;
++	bool late;		/* a query timed out, its reply may still come */
++	bool polled;		/* interrupt masked for shutdown */
 +};
 +
 +struct spcie_dev {
@@ -16842,49 +16881,101 @@ index 000000000000..3a8ed5a79eb3
 +	return 0;
 +}
 +
-+int icc_query(u8 *query, u8 *reply)
-+{
-+	struct icc_msg *msg;
-+	u16 checksum, expected;
-+	int ret;
++static irqreturn_t icc_interrupt(int irq, void *dev);
 +
-+	mutex_lock(&icc_dev->lock);
++/* Wait for the reply by polling, left in ms. */
++static unsigned long icc_poll_reply(unsigned long left)
++{
++	unsigned long flags;
++
++	for (; left; left--) {
++		local_irq_save(flags);
++		icc_interrupt(-1, icc_dev);
++		local_irq_restore(flags);
++		if (READ_ONCE(icc_dev->reply_ready))
++			break;
++		mdelay(1);
++	}
++	return left;
++}
++
++static int icc_xfer(u8 *query, u8 *reply, bool poll)
++{
++	struct icc_msg *msg = (struct icc_msg *)query;
++	unsigned long left, flags;
++	u16 checksum, expected, id, len;
 +
 +	icc_dev->reply_ready = false;
 +
 +	icc_send(query);
++	id = msg->id;
 +
-+	ret = wait_event_timeout(icc_dev->wq, icc_dev->reply_ready,
-+		msecs_to_jiffies(ICC_TIMEOUT_MSECS));
-+	if (ret == 0) {
-+		dev_err(&icc_dev->pdev->dev, "timeout\n");
-+		mutex_unlock(&icc_dev->lock);
-+		return -ETIMEDOUT;
++	left = poll ? ICC_TIMEOUT_MSECS : msecs_to_jiffies(ICC_TIMEOUT_MSECS);
++	for (;;) {
++		if (poll)
++			left = icc_poll_reply(left);
++		else
++			left = wait_event_timeout(icc_dev->wq, icc_dev->reply_ready, left);
++		if (!left) {
++			dev_err(&icc_dev->pdev->dev, "timeout\n");
++			icc_dev->late = true;
++			return -ETIMEDOUT;
++		}
++
++		spin_lock_irqsave(&icc_dev->reply_lock, flags);
++		icc_dev->reply_ready = false;
++		len = icc_dev->reply_length;
++		memcpy(reply, icc_dev->reply, len);
++		spin_unlock_irqrestore(&icc_dev->reply_lock, flags);
++
++		if (len < sizeof(*msg))
++			return -EPROTO;
++		msg = (struct icc_msg *)reply;
++		/* After a timeout, the next reply may be for the earlier query. */
++		if (msg->id == id || !icc_dev->late)
++			break;
++		dev_warn(&icc_dev->pdev->dev, "dropped late reply %#x\n", msg->id);
++		icc_dev->late = false;
 +	}
 +
-+	if (icc_dev->reply_length < sizeof(*msg)) {
-+		mutex_unlock(&icc_dev->lock);
-+		return -EPROTO;
-+	}
-+	memcpy(reply, icc_dev->reply, icc_dev->reply_length);
-+
-+	msg = (struct icc_msg *)reply;
 +	if (msg->length < sizeof(*msg) ||
-+	    msg->length > icc_dev->reply_length) {
-+		mutex_unlock(&icc_dev->lock);
++	    msg->length > len)
 +		return -EPROTO;
-+	}
 +	expected = msg->checksum;
 +	msg->checksum = 0;
 +	checksum = icc_checksum(msg);
 +	if (checksum != expected) {
 +		dev_err(&icc_dev->pdev->dev, "checksum mismatch\n");
-+		mutex_unlock(&icc_dev->lock);
 +		return -EINVAL;
 +	}
 +
-+	mutex_unlock(&icc_dev->lock);
 +	return 0;
++}
++
++/*
++ * Power-off and reboot run after shutdown masked the interrupt, emergency
++ * restart with IRQs off: poll there, and send anyway if the lock stays
++ * taken for 2 s.
++ */
++int icc_query(u8 *query, u8 *reply)
++{
++	bool poll = irqs_disabled() || READ_ONCE(icc_dev->polled);
++	bool locked = true;
++	int i, ret;
++
++	if (!poll) {
++		mutex_lock(&icc_dev->lock);
++	} else {
++		for (i = 0; i < 2000 && !mutex_trylock(&icc_dev->lock); i++)
++			mdelay(1);
++		locked = i < 2000;
++	}
++
++	ret = icc_xfer(query, reply, poll);
++
++	if (locked)
++		mutex_unlock(&icc_dev->lock);
++	return ret;
 +}
 +EXPORT_SYMBOL(icc_query);
 +
@@ -17244,6 +17335,11 @@ index 000000000000..3a8ed5a79eb3
 +
 +	while (1) {
 +		intr_status = readl(icc_dev->icc_doorbell_base + ICC_REG_INTR_STATUS);
++		/* Polled with the interrupt masked: EMW still shows a message. */
++		if (!intr_status && irq < 0 && readw(icc_dev->icc_base + ICC_REG_EMW)) {
++			intr_status = ICC_SEND;
++			irq = 0;
++		}
 +		if (!intr_status)
 +			break;
 +
@@ -17268,6 +17364,7 @@ index 000000000000..3a8ed5a79eb3
 +
 +				icc_notification_handler(msg->service_id, icc_dev->notification);
 +			} else if (msg->msg_type & ICC_MSG_TYPE_REPLY) {
++				spin_lock(&icc_dev->reply_lock);
 +				icc_dev->reply_length =
 +					clamp_t(u16, msg->length, sizeof(*msg), ICC_MSG_MAX_SIZE);
 +				memcpy(icc_dev->reply, msg, icc_dev->reply_length);
@@ -17280,9 +17377,10 @@ index 000000000000..3a8ed5a79eb3
 +				writel(ICC_ACK, icc_dev->icc_doorbell_base + ICC_REG_DOORBELL);
 +
 +				icc_dev->reply_ready = true;
++				spin_unlock(&icc_dev->reply_lock);
 +				wake_up(&icc_dev->wq);
 +			} else {
-+				dev_err(&icc_dev->pdev->dev, "unknown query\n");
++				dev_err_ratelimited(&icc_dev->pdev->dev, "unknown query\n");
 +			}
 +		}
 +	}
@@ -17334,7 +17432,7 @@ index 000000000000..3a8ed5a79eb3
 +
 +static void spcie_power_button_remove(struct spcie_icc_dev *icc_dev)
 +{
-+	input_free_device(icc_dev->idev);
++	input_unregister_device(icc_dev->idev);
 +}
 +
 +static int spcie_icc_init(struct spcie_dev *sdev)
@@ -17353,6 +17451,7 @@ index 000000000000..3a8ed5a79eb3
 +	INIT_WORK(&icc_notification_work, icc_notification_work_func);
 +
 +	mutex_init(&icc_dev->lock);
++	spin_lock_init(&icc_dev->reply_lock);
 +	init_waitqueue_head(&icc_dev->wq);
 +
 +	icc_dev->icc_doorbell_base = sdev->bar2 + ICC_DOORBELL_OFFSET;
@@ -17369,7 +17468,7 @@ index 000000000000..3a8ed5a79eb3
 +	vector = pci_irq_vector(sdev->pdev, SPCIE_SUBFUNC_ICC);
 +	ret = devm_request_irq(&sdev->pdev->dev, vector, icc_interrupt, 0, "icc", icc_dev);
 +	if (ret)
-+		return ret;
++		goto err_button;
 +
 +	/* Enable IRQs */
 +	writel(ICC_SEND | ICC_ACK, icc_dev->icc_doorbell_base + ICC_REG_INTR_MASK);
@@ -17385,7 +17484,7 @@ index 000000000000..3a8ed5a79eb3
 +	enable_irq(vector);
 +
 +	/* Set DMI info */
-+	static char hw_model[32] = {0}, hw_info[32] = {0};
++	static char hw_model[0x21] = {0}, hw_info[32] = {0};
 +	if (icc_nvs_read(2, 0x30, 0x20, hw_model) == 0) {
 +		dmi_set_system_info(DMI_PRODUCT_VERSION, hw_model);
 +	}
@@ -17410,9 +17509,13 @@ index 000000000000..3a8ed5a79eb3
 +
 +	ret = misc_register(&icc_misc_device);
 +	if (ret)
-+		return ret;
++		goto err_button;
 +
 +	return 0;
++
++err_button:
++	spcie_power_button_remove(icc_dev);
++	return ret;
 +}
 +
 +static int spcie_icc_remove(struct spcie_dev *sdev)
@@ -17430,8 +17533,11 @@ index 000000000000..3a8ed5a79eb3
 +{
 +	icc_fan_change_servo_pattern(0);
 +
-+	/* Disable IRQs */
++	/* Disable IRQs, power-off and reboot poll */
++	mutex_lock(&icc_dev->lock);
 +	writel(0, icc_dev->icc_doorbell_base + ICC_REG_INTR_MASK);
++	WRITE_ONCE(icc_dev->polled, true);
++	mutex_unlock(&icc_dev->lock);
 +
 +	return 0;
 +}
@@ -17643,7 +17749,8 @@ index 000000000000..3a8ed5a79eb3
 +		chip_name = "Salina2";
 +		spcie_chip_revision_id = 0x120000;
 +	} else {
-+		panic("unknown subsys %08x\n", chip_revision);
++		dev_err(&pdev->dev, "unknown subsys %08x\n", chip_revision);
++		return -ENODEV;
 +	}
 +
 +	switch (chip_revision & 0xffff) {
@@ -17653,7 +17760,8 @@ index 000000000000..3a8ed5a79eb3
 +	case 0x201: rev_name = "B1"; break;
 +	case 0x300: rev_name = "C0"; break;
 +	default:
-+		panic("unknown subsys %08x\n", chip_revision);
++		dev_warn(&pdev->dev, "unknown revision %08x\n", chip_revision);
++		rev_name = "unknown";
 +	}
 +
 +	spcie_chip_revision_id |= (chip_revision & 0xffff);
@@ -17716,6 +17824,8 @@ index 000000000000..3a8ed5a79eb3
 +	.probe		= spcie_probe,
 +	.remove		= spcie_remove,
 +	.shutdown	= spcie_shutdown,
++	/* fan, rtc, xhci and others use icc and pervasive0 without a reference */
++	.driver.suppress_bind_attrs = true,
 +};
 +
 +module_pci_driver(spcie_driver);
@@ -19097,10 +19207,10 @@ index a8889081ae82..54bdb35bf19d 100644
  MODULE_DEVICE_TABLE(pci, pci_ids);
 diff --git a/drivers/usb/host/xhci-ps5.c b/drivers/usb/host/xhci-ps5.c
 new file mode 100644
-index 000000000000..56779ae10119
+index 000000000000..c4485fbe7a39
 --- /dev/null
 +++ b/drivers/usb/host/xhci-ps5.c
-@@ -0,0 +1,516 @@
+@@ -0,0 +1,515 @@
 +/*
 +* Playstation 5 Salina XHCI driver helper
 +* Author: https://github.com/c0w-ar
@@ -19160,7 +19270,6 @@ index 000000000000..56779ae10119
 +    *bar = ioremap(start, min_size);
 +    if (!*bar) {
 +        pr_err("Could not ioremap memory\n");
-+        release_mem_region(start, min_size);
 +        return -ENOMEM;
 +    }
 +
@@ -19435,7 +19544,7 @@ index 000000000000..56779ae10119
 +    salina_xhci.revision = spcie_get_chip_id();
 +    if (salina_xhci.revision!=0x110000 && salina_xhci.revision!=0x120000) {
 +        dev_warn(&pdev->dev, "PS5 Salina revision unknown %08x\n", salina_xhci.revision);
-+        return ENODEV;
++        return -ENODEV;
 +    }
 +
 +    ret = init_bar(pdev);
@@ -19558,7 +19667,7 @@ index 000000000000..56779ae10119
 +        goto resched;
 +
 +    if (!spin_trylock_irqsave(&xhci->lock, flags)) {
-+        printk(KERN_INFO "Salina poller: lock busy, rescheduling\n");
++        pr_debug("Salina poller: lock busy, rescheduling\n");
 +        goto resched;
 +    }
 +
@@ -19634,7 +19743,7 @@ index 000000000000..90d41d3dc524
 +void salina_stop_xhci_poller(void);
 \ No newline at end of file
 diff --git a/drivers/usb/host/xhci-ring.c b/drivers/usb/host/xhci-ring.c
-index ec278a9f9540..abbef26f4355 100644
+index ec278a9f9540..b8d6a31cad31 100644
 --- a/drivers/usb/host/xhci-ring.c
 +++ b/drivers/usb/host/xhci-ring.c
 @@ -61,6 +61,8 @@
@@ -19646,7 +19755,7 @@ index ec278a9f9540..abbef26f4355 100644
  
  static int queue_command(struct xhci_hcd *xhci, struct xhci_command *cmd,
  			 u32 field1, u32 field2,
-@@ -3089,12 +3091,14 @@ static void xhci_clear_interrupt_pending(struct xhci_interrupter *ir)
+@@ -3089,12 +3091,13 @@ static void xhci_clear_interrupt_pending(struct xhci_interrupter *ir)
   * Handle all OS-owned events on an interrupter event ring. It may drop
   * and reaquire xhci->lock between event processing.
   */
@@ -19657,39 +19766,22 @@ index ec278a9f9540..abbef26f4355 100644
  	int event_loop = 0;
  	int err = 0;
  	u64 temp;
-+	int iters = 0;
-+	const int max_iters = 32;
++	unsigned int iters = 0;
  
  	xhci_clear_interrupt_pending(ir);
  
-@@ -3137,11 +3141,27 @@ static int xhci_handle_events(struct xhci_hcd *xhci, struct xhci_interrupter *ir
+@@ -3137,6 +3140,11 @@ static int xhci_handle_events(struct xhci_hcd *xhci, struct xhci_interrupter *ir
  
  		if (err)
  			break;
 +
-+		if (xhci->quirks & XHCI_PS5_SALINA_PHY) {
-+			if (++iters > max_iters) {
-+	            xhci_warn(xhci,
-+	                  "Salina: event ring appears stuck after %d TRBs\n",
-+	                  iters);
-+	            goto salina_stuck;
-+	        }
-+		}
++		/* Salina: leave the rest of a long burst to the next poll. */
++		if ((xhci->quirks & XHCI_PS5_SALINA_PHY) &&
++		    ++iters >= ir->event_ring->num_segs * TRBS_PER_SEGMENT)
++			break;
  	}
  
  	xhci_update_erst_dequeue(xhci, ir, true);
- 
- 	return 0;
-+
-+salina_stuck:
-+    /* mark host dying so we don't deadlock future URBs */
-+    xhci->xhc_state |= XHCI_STATE_DYING;
-+
-+    xhci_update_erst_dequeue(xhci, ir, true);
-+    return -EIO;
- }
- 
- /*
 diff --git a/drivers/usb/host/xhci-ring.h b/drivers/usb/host/xhci-ring.h
 new file mode 100755
 index 000000000000..193ac03a3074
@@ -19762,10 +19854,10 @@ index fbb62f7c3111..18edd8279773 100644
  extern void dmi_setup(void);
 diff --git a/include/linux/ps5.h b/include/linux/ps5.h
 new file mode 100755
-index 000000000000..6864cab31537
+index 000000000000..2da8ba73791b
 --- /dev/null
 +++ b/include/linux/ps5.h
-@@ -0,0 +1,283 @@
+@@ -0,0 +1,284 @@
 +/* SPDX-License-Identifier: GPL-2.0-only */
 +
 +#ifndef _LINUX_PS5_H
@@ -20032,6 +20124,7 @@ index 000000000000..6864cab31537
 +void mp1_viola_enable_wgps(void);
 +int ps5_mp1_query_gfxclk(u32 *mhz);
 +int ps5_mp1_request_gfxclk(u32 mhz);
++unsigned int ps5_mp1_gfxclk_seq(void);
 +
 +/* PS5 Pro GPU (Viola); Sony's kernel matches both IDs. */
 +static inline bool ps5_is_viola(u16 device)
