@@ -2820,7 +2820,7 @@ index 4594824985e1..63ed43f739bb 100644
  	if (q->properties.is_gws) {
  		dqm->gws_queue_count--;
 diff --git a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c
-index 47a0ff2ed035..f5734ab97115 100644
+index 47a0ff2ed035..153e9b8f46d9 100644
 --- a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c
 +++ b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c
 @@ -87,6 +87,13 @@
@@ -3259,7 +3259,7 @@ index 47a0ff2ed035..f5734ab97115 100644
 +			dm_ps5_mode_from_timing(&new_stream->timing, &mode);
 +			/* Recovery must not trade HDR depth; user requests keep their own. */
 +			if (dm_new_conn_state->ps5_hdmi_recovery_commit &&
-+			    drm_new_conn_state->hdr_output_metadata &&
++			    dm_ps5_hdr_requested(drm_new_conn_state) &&
 +			    new_stream->timing.display_color_depth < COLOR_DEPTH_101010) {
 +				ret = -EINVAL;
 +				goto fail;
@@ -10323,10 +10323,10 @@ index 000000000000..80953514df04
 +EXPORT_SYMBOL(ps5_gpufreq_register);
 diff --git a/drivers/ps5/hdmi.c b/drivers/ps5/hdmi.c
 new file mode 100755
-index 000000000000..3b2fe47c74a2
+index 000000000000..f30c5f88f711
 --- /dev/null
 +++ b/drivers/ps5/hdmi.c
-@@ -0,0 +1,2458 @@
+@@ -0,0 +1,2461 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +
 +#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -12397,6 +12397,9 @@ index 000000000000..3b2fe47c74a2
 +		.min_rate = 4,
 +	};
 +
++	/* Plan an EOTF 0 InfoFrame as SDR. */
++	if (metadata && metadata->eotf == HDMI_EOTF_TRADITIONAL_GAMMA_SDR)
++		metadata = NULL;
 +	if (!caps.enabled)
 +		return PS5_HDMI_PLAN_BACKEND;
 +	if (drm_mode_is_420_only(info, mode) && !yuv420)
@@ -19845,14 +19848,15 @@ index 000000000000..2a99b43f772f
 +}
 diff --git a/drivers/gpu/drm/amd/display/amdgpu_dm/ps5-hdmi-recovery.h b/drivers/gpu/drm/amd/display/amdgpu_dm/ps5-hdmi-recovery.h
 new file mode 100644
-index 000000000000..1df4096ac335
+index 000000000000..d9b120150ec4
 --- /dev/null
 +++ b/drivers/gpu/drm/amd/display/amdgpu_dm/ps5-hdmi-recovery.h
-@@ -0,0 +1,88 @@
+@@ -0,0 +1,103 @@
 +/* SPDX-License-Identifier: MIT */
 +#ifndef AMDGPU_DM_PS5_HDMI_RECOVERY_H
 +#define AMDGPU_DM_PS5_HDMI_RECOVERY_H
 +
++#include <linux/hdmi.h>
 +#include <linux/spinlock.h>
 +#include <linux/workqueue.h>
 +#include <drm/drm_connector.h>
@@ -19898,6 +19902,20 @@ index 000000000000..1df4096ac335
 +	enum dm_ps5_recovery_state state;
 +};
 +
++/* EOTF 0 is SDR, not an HDR request. */
++static inline bool dm_ps5_hdr_requested(const struct drm_connector_state *state)
++{
++	const struct drm_property_blob *blob = state->hdr_output_metadata;
++	const struct hdr_output_metadata *metadata;
++
++	if (!blob)
++		return false;
++	if (blob->length != sizeof(*metadata))
++		return true;
++	metadata = blob->data;
++	return metadata->hdmi_metadata_type1.eotf != HDMI_EOTF_TRADITIONAL_GAMMA_SDR;
++}
++
 +#define PS5_HDMI_RESETUP_WINDOW_MS	10000
 +#define PS5_HDMI_RESETUP_DELAY_MS	500
 +#define PS5_HOTPLUG_RETRIES		3
@@ -19939,7 +19957,7 @@ index 000000000000..1df4096ac335
 +#endif
 diff --git a/drivers/gpu/drm/amd/display/amdgpu_dm/ps5-hdmi-recovery.inc b/drivers/gpu/drm/amd/display/amdgpu_dm/ps5-hdmi-recovery.inc
 new file mode 100644
-index 000000000000..a6e1efc7987f
+index 000000000000..2756348e6378
 --- /dev/null
 +++ b/drivers/gpu/drm/amd/display/amdgpu_dm/ps5-hdmi-recovery.inc
 @@ -0,0 +1,265 @@
@@ -20105,7 +20123,7 @@ index 000000000000..a6e1efc7987f
 +	recovery->status.requested_width = crtc_state->mode.hdisplay;
 +	recovery->status.requested_height = crtc_state->mode.vdisplay;
 +	recovery->status.requested_millihz = dm_ps5_mode_millihz(&crtc_state->mode);
-+	recovery->status.hdr = blob != NULL;
++	recovery->status.hdr = dm_ps5_hdr_requested(state);
 +	dm_ps5_recovery_put(conn->ps5_hdmi_recovery);
 +	conn->ps5_hdmi_recovery = recovery;
 +	conn->ps5_hdmi_attempt = 0;
