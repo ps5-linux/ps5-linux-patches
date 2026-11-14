@@ -3370,7 +3370,7 @@ index 47a0ff2ed035..836296d306a5 100644
  						  aconnector)) {
  			struct drm_display_mode *high_mode;
 diff --git a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_connector.c b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_connector.c
-index 45a69bf43971..7a2637ce3d9b 100644
+index 45a69bf43971..d6ff16f7c604 100644
 --- a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_connector.c
 +++ b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_connector.c
 @@ -78,6 +78,22 @@
@@ -3686,9 +3686,9 @@ index 45a69bf43971..7a2637ce3d9b 100644
  	}
  
 +#ifdef CONFIG_X86_PS5
-+	/* VERDE outputs 8 bpc only; a deeper DP input gives a black screen. */
-+	if (dm_ps5_is_hdmi_connector(connector) && !isHdmiDeepColorSupported())
-+		requested_bpc = requested_bpc ? min(requested_bpc, 8) : 8;
++	/* VERDE: a depth the HDMI side cannot carry gives a black screen. */
++	if (dm_ps5_is_hdmi_connector(connector))
++		requested_bpc = ps5_hdmi_bpc_limit(drm_mode, info, requested_bpc);
 +#endif
 +
  	/*
@@ -10756,10 +10756,10 @@ index 000000000000..80953514df04
 +EXPORT_SYMBOL(ps5_gpufreq_register);
 diff --git a/drivers/ps5/hdmi.c b/drivers/ps5/hdmi.c
 new file mode 100755
-index 000000000000..8db6c31dc025
+index 000000000000..eafc17bb3463
 --- /dev/null
 +++ b/drivers/ps5/hdmi.c
-@@ -0,0 +1,2725 @@
+@@ -0,0 +1,3044 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +
 +#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -10825,6 +10825,26 @@ index 000000000000..8db6c31dc025
 +static unsigned int allm_avi = 1;
 +module_param(allm_avi, uint, 0644);
 +MODULE_PARM_DESC(allm_avi, "TMDS AVI content from the next modeset: 0 = IT content Game, 1 = clear IT content/type while ALLM is enabled (default), 2 = always clear IT content/type");
++
++/*
++ * VERDE: AVI, HDR and RGB range InfoFrames written the way the PS5 OS writes
++ * them. Off by default; read at each modeset.
++ */
++static bool verde_infoframes;
++module_param(verde_infoframes, bool, 0644);
++MODULE_PARM_DESC(verde_infoframes, "VERDE: send AVI, HDR (DRM) and RGB range InfoFrames from the next modeset (default off)");
++static bool verde_deep_colour;
++module_param(verde_deep_colour, bool, 0444);
++MODULE_PARM_DESC(verde_deep_colour, "VERDE: 10 and 12 bpc where the TMDS clock allows (default off)");
++static bool verde_frl;
++module_param(verde_frl, bool, 0444);
++MODULE_PARM_DESC(verde_frl, "VERDE: FRL for 4K100/120 and 4K60 deep colour, and 4:2:2 output (default off)");
++static bool verde_vrr;
++module_param(verde_vrr, bool, 0444);
++MODULE_PARM_DESC(verde_vrr, "VERDE: HDMI VRR for sinks with HDMI VRR and a FreeSync range (default off)");
++static bool verde_allm;
++module_param(verde_allm, bool, 0444);
++MODULE_PARM_DESC(verde_allm, "VERDE: ALLM, following the allm parameter (default off)");
 +
 +struct icc_i2c_msg {
 +	u8 code;
@@ -10949,6 +10969,7 @@ index 000000000000..8db6c31dc025
 +static bool sink_cta_422;
 +static bool sink_cta_444;
 +static u8 sink_y420_modes[256];
++static bool sink_hf_vrr;
 +static bool sink_allm;
 +module_param_named(allm_sink, sink_allm, bool, 0444);
 +MODULE_PARM_DESC(allm_sink, "Y if the sink advertises ALLM in its HF-VSDB or HF-SCDB (read only)");
@@ -11713,6 +11734,8 @@ index 000000000000..8db6c31dc025
 +
 +bool ps5_hdmi_vrr_enabled(void)
 +{
++	if (hdmi_ic_type == HDMI_IC_TYPE_VERDE)
++		return READ_ONCE(verde_vrr);
 +	return vrr && hdmi_ic_type == HDMI_IC_TYPE_FLAVA3;
 +}
 +EXPORT_SYMBOL(ps5_hdmi_vrr_enabled);
@@ -11756,6 +11779,8 @@ index 000000000000..8db6c31dc025
 +	unsigned int refresh;
 +
 +	if (!ps5_hdmi_vrr_enabled() || !range || !vrr_mode_ok(mode) || ps5_hdmi_vrr_failed())
++		return false;
++	if (hdmi_ic_type == HDMI_IC_TYPE_VERDE && !READ_ONCE(sink_hf_vrr))
 +		return false;
 +	refresh = drm_mode_vrefresh(mode);
 +	return refresh >= (range & 0xff) && refresh <= (range >> 8);
@@ -12012,7 +12037,9 @@ index 000000000000..8db6c31dc025
 +{
 +	unsigned int policy = READ_ONCE(allm);
 +
-+	return hdmi_ic_type == HDMI_IC_TYPE_FLAVA3 && READ_ONCE(frl_edid_valid) &&
++	return (hdmi_ic_type == HDMI_IC_TYPE_FLAVA3 ||
++		(hdmi_ic_type == HDMI_IC_TYPE_VERDE && READ_ONCE(verde_allm))) &&
++	       READ_ONCE(frl_edid_valid) &&
 +	       READ_ONCE(sink_allm) &&
 +	       (policy == 2 || (policy == 1 && READ_ONCE(allm_game)));
 +}
@@ -12471,12 +12498,25 @@ index 000000000000..8db6c31dc025
 +	setAudioConfigAdditional(channels);
 +}
 +
-+static void initVerde(void)
++/* Status bits 4 and 6 of 0x00f3 each ask for a reset, as the PS5 OS does it. */
++static void initVerdeStatus(u8 status)
 +{
 +	i2c_init(0);
 +	i2c_mask(0x105, 0x00, 0x03);
 +	i2c_mask(0x104, 0x00, 0x02);
 +	i2c_cmd_2_1(0x400, 0x00);
++	if (status & 0x10) {
++		i2c_cmd_2_1(0xf1, 0x10);
++		i2c_waitset(0xf2, 0x10);
++		i2c_waitset(0x16, 0x08);
++		i2c_cmd_2_1(0x16, 0x08);
++	}
++	if (status & 0x40) {
++		i2c_cmd_2_1(0xf1, 0x40);
++		i2c_waitset(0xf2, 0x40);
++		i2c_waitset(0x16, 0x08);
++		i2c_cmd_2_1(0x16, 0x08);
++	}
 +	i2c_cmd_2_1(0x3261, 0x02);
 +	i2c_begin_block();
 +	i2c_write(0x11, 0x03);
@@ -12487,6 +12527,11 @@ index 000000000000..8db6c31dc025
 +	i2c_end_block();
 +	i2c_cmd_5_3(0x00);
 +	i2c_exec();
++}
++
++static void initVerde(void)
++{
++	initVerdeStatus(0);
 +}
 +
 +static void linkConfigVerde(const struct drm_display_mode *mode)
@@ -12503,19 +12548,20 @@ index 000000000000..8db6c31dc025
 +	i2c_exec();
 +}
 +
-+static void configDpLinkTrainingVerde(void)
++/* VRR sets bit 7 of 0x8003 for the DP input. */
++static int configDpLinkTrainingVerde(bool vrr)
 +{
 +	i2c_init(0);
 +	i2c_cmd_2_1(0x9002, 0x01);
++	if (vrr)
++		i2c_write_data(0x8000, (u8[]){0x00, 0x01, 0x07, 0x80}, 4);
 +	i2c_waitset(0x4001, 0x02);
 +	i2c_cmd_2_1(0x11, 0x01);
-+	i2c_exec();
++	return i2c_exec();
 +}
 +
-+static void setTmdsConfigVerde(void)
++static void queueVerdeAudio(void)
 +{
-+	i2c_init(0);
-+	i2c_cmd_2_1(0x9200, 0x00);
 +	i2c_begin_block();
 +	i2c_write(0x9800, 0x00);
 +	i2c_write(0x33b3, 0x1a);
@@ -12527,6 +12573,13 @@ index 000000000000..8db6c31dc025
 +	i2c_waitclear(0x9830, 0x80);
 +	i2c_cmd_2_1(0x9830, 0x81);
 +	i2c_waitclear(0x9830, 0x80);
++}
++
++static void setTmdsConfigVerde(bool vrr)
++{
++	i2c_init(0);
++	i2c_cmd_2_1(0x9200, vrr);
++	queueVerdeAudio();
 +	i2c_waitclear(0x108, 0x10);
 +	i2c_mask(0x108, 0x11, 0x17);
 +	i2c_waitset(0x13, 0x40);
@@ -12536,25 +12589,199 @@ index 000000000000..8db6c31dc025
 +	i2c_exec();
 +}
 +
-+static void setHdmiBasicVideoConfigVerde(const struct drm_display_mode *mode)
++/*
++ * verde_infoframes state: what amdgpu asked for since the last video setup,
++ * and what was written. valid is false when that setup wrote no AVI.
++ */
++static DEFINE_MUTEX(verde_if_lock);
++static struct {
++	bool valid;
++	u8 vic;
++	u8 format;
++	bool limited;
++	bool bt2020;
++	bool hdr;
++	struct hdmi_drm_infoframe frame;
++	u8 avi[18];
++	bool drm_sent;
++	u8 drm[HDMI_INFOFRAME_SIZE(DRM)];
++} verde_if;
++
++/*
++ * The AVI InfoFrame at 0x3058 without its type byte: version, length,
++ * checksum, PB1-PB13 and two zero bytes, as in the PS5 OS captures.
++ */
++static void verde_avi(u8 avi[18], u8 vic, u8 format, bool bt2020, bool limited)
++{
++	bool rgb = format == PS5_HDMI_RGB;
++	u8 sum = HDMI_INFOFRAME_TYPE_AVI;
++	unsigned int i;
++
++	memset(avi, 0, 18);
++	avi[0] = 0x02;
++	avi[1] = HDMI_AVI_INFOFRAME_SIZE;
++	avi[3] = format == PS5_HDMI_422 ? 0x20 : format == PS5_HDMI_444 ? 0x40 : 0x00;
++	avi[4] = bt2020 ? 0xe8 : 0x28;
++	avi[5] = (bt2020 ? 0x60 : 0x00) | (rgb ? (limited ? 0x04 : 0x08) : 0x00);
++	avi[6] = vic;
++	avi[7] = limited ? 0x00 : 0x40;
++	for (i = 0; i < 3 + HDMI_AVI_INFOFRAME_SIZE; i++)
++		sum += avi[i];
++	avi[2] = -sum;
++}
++
++/* Packet enables at 0x3000: ALLM (HF-VSIF), DRM and 8 bpc. */
++static void verde_packets(u8 out[10], bool allm, bool drm, bool deep)
++{
++	static const u8 base[10] = { 0x56, 0xaa, 0x00, 0x24, 0x00, 0xa8, 0x00, 0x00, 0x08, 0x80 };
++
++	memcpy(out, base, sizeof(base));
++	if (allm) {
++		out[1] = (out[1] & ~0x30) | 0x10;
++		out[6] |= 0x20;
++	}
++	if (drm) {
++		out[1] = (out[1] & ~0xc0) | 0x40;
++		out[6] |= 0x80;
++	}
++	if (deep)
++		out[9] = 0x00;
++}
++
++/* 0x3033 byte 3 is the RGB/4:4:4 depth, byte 4 is set over FRL. */
++static void verde_depth(u8 out[9], unsigned int bpc, u8 format, bool frl)
++{
++	memset(out, 0, 9);
++	if (format == PS5_HDMI_422 || bpc <= 8)
++		return;
++	out[3] = bpc >= 12 ? 0x06 : 0x05;
++	out[4] = frl;
++}
++
++/*
++ * Rewrite the AVI and DRM InfoFrames on a running output when they change,
++ * in the order the PS5 OS uses for its VERDE audio InfoFrame update: blocks,
++ * the enable bits in 0x3000, the trigger 0x300a and the done flag in 0x0013.
++ */
++static void verde_if_update(void)
++{
++	const struct hdmi_drm_infoframe *frame = NULL;
++	struct hdmi_drm_infoframe sdr;
++	u8 drm[HDMI_INFOFRAME_SIZE(DRM)];
++	bool send_drm;
++	u8 avi[18];
++	int ret;
++
++	lockdep_assert_held(&verde_if_lock);
++	if (!verde_if.valid)
++		return;
++	/* Sinks keep the last DRM InfoFrame: send EOTF 0 when leaving HDR. */
++	if (verde_if.hdr) {
++		frame = &verde_if.frame;
++	} else if (verde_if.drm_sent) {
++		hdmi_drm_infoframe_init(&sdr);
++		frame = &sdr;
++	}
++	send_drm = frame && hdmi_drm_infoframe_pack_only(frame, drm, sizeof(drm)) == sizeof(drm);
++	if (frame && !send_drm)
++		return;
++	verde_avi(avi, verde_if.vic, verde_if.format, verde_if.bt2020, verde_if.limited);
++	if (!memcmp(avi, verde_if.avi, sizeof(avi)) && send_drm == verde_if.drm_sent &&
++	    (!send_drm || !memcmp(drm, verde_if.drm, sizeof(drm))))
++		return;
++
++	i2c_init(2);
++	i2c_begin_block();
++	i2c_write_data(0x3058, avi, sizeof(avi));
++	if (send_drm)
++		i2c_write_data(0x3102, drm + 1, sizeof(drm) - 1);
++	i2c_end_block();
++	i2c_mask(0x3001, send_drm ? 0x40 : 0x80, 0xc0);
++	i2c_mask(0x3006, send_drm ? 0x80 : 0x00, 0xc0);
++	i2c_cmd_2_1(0x300a, 0x01);
++	i2c_waitset(0x13, 0x80);
++	i2c_cmd_2_1(0x13, 0x80);
++	ret = i2c_exec();
++
++	memcpy(verde_if.avi, avi, sizeof(avi));
++	verde_if.drm_sent = send_drm;
++	if (send_drm)
++		memcpy(verde_if.drm, drm, sizeof(drm));
++	pr_info("verde: InfoFrames vic %u, %s range, %s, DRM %s (%d)\n", verde_if.vic,
++		verde_if.limited ? "limited" : "full",
++		verde_if.bt2020 ? "BT.2020" : "default colorimetry",
++		!send_drm ? "off" : verde_if.hdr ? "HDR" : "EOTF 0", ret);
++}
++
++static const u8 verde_spd[28] = {
++	0x01, 0x19, 0x5f, 0x53, 0x43, 0x45, 0x49, 0x00, 0x00, 0x00, 0x00, 0x50, 0x53, 0x35,
++	[27] = 0x08,
++};
++
++/* HF-VSIF with ALLM_Mode set, version, length and checksum first. */
++static const u8 verde_hf_vsif[8] = { 0x01, 0x05, 0x7d, 0xd8, 0x5d, 0xc4, 0x01, 0x02 };
++
++static void queueVerdeVrr(unsigned int refresh, bool frl)
++{
++	i2c_write(0x326a, 0x84);
++	if (frl)
++		i2c_write_data(0x3271, (u8[]){0x01, 0x00, 0x00, 0x00}, 4);
++	else
++		i2c_write_data(0x3271, (u8[]){0x01, 0x03, 0x00, refresh}, 4);
++}
++
++static bool verde_deep(unsigned int bpc, u8 format)
++{
++	return READ_ONCE(verde_deep_colour) && format != PS5_HDMI_422 && bpc > 8;
++}
++
++static void setHdmiBasicVideoConfigVerde(const struct drm_display_mode *mode, unsigned int bpc,
++					 u8 format, bool vrr, bool allm)
 +{
 +	u8 vic = drm_match_cea_mode(mode);
++	bool infoframes = READ_ONCE(verde_infoframes) || format != PS5_HDMI_RGB;
++	bool deep = verde_deep(bpc, format);
++	u8 avi[18], packets[10], depth[9];
++
++	verde_avi(avi, vic, format, false, false);
++	verde_packets(packets, allm, false, deep);
++	verde_depth(depth, deep ? bpc : 8, format, false);
++	mutex_lock(&verde_if_lock);
++	verde_if.valid = infoframes;
++	verde_if.vic = vic;
++	verde_if.format = format;
++	verde_if.limited = false;
++	verde_if.bt2020 = false;
++	verde_if.hdr = false;
++	memcpy(verde_if.avi, avi, sizeof(avi));
++	verde_if.drm_sent = false;
++	mutex_unlock(&verde_if_lock);
 +
 +	i2c_init(0);
 +	i2c_begin_block();
-+	if (vic == 16) {
++	if (infoframes) {
++		i2c_write_data(0x3058, avi, sizeof(avi));
++	} else if (vic == 16) {
 +		i2c_write_data(0x3058, (u8[]){0x02, 0x0d, 0xef, 0x00, 0x28, 0x08, 0x10, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, 18);
 +	} else if (mode->hdisplay == 2560 && mode->vdisplay == 1440) {
 +		i2c_write_data(0x3058, (u8[]){0x02, 0x0d, 0xff, 0x00, 0x28, 0x08, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, 18);
 +	} else if (vic == 97) {
 +		i2c_write_data(0x3058, (u8[]){0x02, 0x0d, 0x9e, 0x00, 0x28, 0x08, 0x61, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, 18);
 +	}
-+	i2c_write_data(0x31d0, (u8[]){0x01, 0x19, 0x5f, 0x53, 0x43, 0x45, 0x49, 0x00, 0x00, 0x00, 0x00, 0x50, 0x53, 0x35, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08}, 28);
++	i2c_write_data(0x31d0, (u8 *)verde_spd, sizeof(verde_spd));
 +	i2c_end_block();
 +	i2c_begin_block();
-+	i2c_write_data(0x3033, (u8[]){0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, 9);
++	if (allm)
++		i2c_write_data(0x30e0, (u8 *)verde_hf_vsif, sizeof(verde_hf_vsif));
++	i2c_write_data(0x3033, depth, sizeof(depth));
 +	i2c_write_data(0x307a, (u8[]){0x01, 0x0a, 0x70, 0x01, 0x00, 0x00, 0x00, 0x00}, 8);
-+	i2c_write_data(0x3000, (u8[]){0x56, 0xaa, 0x00, 0x24, 0x00, 0xa8, 0x00, 0x00, 0x08, 0x80}, 10);
++	if (vrr)
++		queueVerdeVrr(min(drm_mode_vrefresh(mode), 255), false);
++	i2c_write_data(0x3000, packets, sizeof(packets));
++	if (vrr) {
++		i2c_write(0x3261, 0x01);
++		i2c_write(0x3262, 0x02);
++	}
 +	i2c_end_block();
 +	i2c_cmd_2_1(0x300a, 0x01);
 +	i2c_waitclear(0x300c, 0xf3);
@@ -12571,12 +12798,51 @@ index 000000000000..8db6c31dc025
 +	i2c_exec();
 +}
 +
-+static void setHdmiVideoConfigVerde(const struct drm_display_mode *mode)
++static int setHdmiVideoConfigVerde(const struct drm_display_mode *mode, unsigned int bpc,
++				   bool yuv422, bool source_vrr, unsigned int generation,
++				   struct ps5_hdmi_setup_result *result)
 +{
++	u8 format = yuv422 && READ_ONCE(verde_frl) ? PS5_HDMI_422 : PS5_HDMI_RGB;
++	bool vrr, allm;
++
++	mutex_lock(&frl_setup_lock);
++	vrr = ps5_hdmi_vrr_allowed(mode);
++	if (source_vrr && !vrr) {
++		WRITE_ONCE(vrr_setup_pending, false);
++		mutex_unlock(&frl_setup_lock);
++		if (!vrr_fail_generation(generation))
++			return -ENODEV;
++		result->generation = generation;
++		result->retry_fixed = true;
++		return -EAGAIN;
++	}
++	allm = allm_wanted();
 +	linkConfigVerde(mode);
-+	configDpLinkTrainingVerde();
-+	setTmdsConfigVerde();
-+	setHdmiBasicVideoConfigVerde(mode);
++	configDpLinkTrainingVerde(vrr);
++	setTmdsConfigVerde(vrr);
++	setHdmiBasicVideoConfigVerde(mode, bpc, format, vrr, allm);
++	if (READ_ONCE(verde_allm))
++		allm_record(generation, allm, true);
++	WRITE_ONCE(vrr_setup_pending, false);
++	if (vrr)
++		pr_info("verde: VRR on, up to %d Hz\n", drm_mode_vrefresh(mode));
++	mutex_unlock(&frl_setup_lock);
++	return 0;
++}
++
++/* ALLM on a running output, as the PS5 OS changes it without a mode set. */
++static int setAllmVerde(bool on)
++{
++	i2c_init(2);
++	if (on) {
++		i2c_write_data(0x30e0, (u8 *)verde_hf_vsif, sizeof(verde_hf_vsif));
++		i2c_mask(0x3001, 0x10, 0x30);
++		i2c_mask(0x3006, 0x20, 0x30);
++	} else {
++		i2c_mask(0x3001, 0x20, 0x30);
++	}
++	i2c_cmd_2_1(0x300a, 0x01);
++	return i2c_exec();
 +}
 +
 +static void setAudioConfigForVerde(int channels)
@@ -12615,7 +12881,11 @@ index 000000000000..8db6c31dc025
 +	setAudioConfigForVerde(channels);
 +}
 +
++static int verde_apply_plan(const struct ps5_hdmi_plan *plan, bool source_vrr,
++			    struct ps5_hdmi_setup_result *result);
++
 +#include "frl-native.inc"
++#include "frl-verde.inc"
 +
 +/* amdgpu: whether the connector content type is Game, for the next ALLM decision */
 +void ps5_hdmi_allm_request(bool game)
@@ -12631,7 +12901,8 @@ index 000000000000..8db6c31dc025
 +	bool on, ready, valid, active;
 +	int ret = 0;
 +
-+	if (hdmi_ic_type != HDMI_IC_TYPE_FLAVA3)
++	if (hdmi_ic_type != HDMI_IC_TYPE_FLAVA3 &&
++	    !(hdmi_ic_type == HDMI_IC_TYPE_VERDE && READ_ONCE(verde_allm)))
 +		return 0;
 +	mutex_lock(&frl_setup_lock);
 +	mutex_lock(&frl_state_lock);
@@ -12642,7 +12913,7 @@ index 000000000000..8db6c31dc025
 +	on = allm_wanted();
 +	mutex_unlock(&frl_state_lock);
 +	if (ready && (!valid || on != active)) {
-+		ret = setAllmFlava3(on);
++		ret = hdmi_ic_type == HDMI_IC_TYPE_VERDE ? setAllmVerde(on) : setAllmFlava3(on);
 +		if (!allm_record(generation, on, !ret))
 +			ret = -ENODEV;
 +		if (ret)
@@ -12777,11 +13048,18 @@ index 000000000000..8db6c31dc025
 +	return false;
 +}
 +
++static bool frl_backend_enabled(void)
++{
++	if (hdmi_ic_type == HDMI_IC_TYPE_VERDE)
++		return READ_ONCE(verde_frl);
++	return READ_ONCE(frl_4k120) && hdmi_ic_type == HDMI_IC_TYPE_FLAVA3 &&
++	       frl_wiring_valid();
++}
++
 +bool getHdmiFrlConfig(const struct drm_display_mode *mode, unsigned int max_bpc,
 +		      struct ps5_hdmi_frl_config *config)
 +{
-+	return READ_ONCE(frl_4k120) && hdmi_ic_type == HDMI_IC_TYPE_FLAVA3 &&
-+	       frl_wiring_valid() && frl_mode_config(mode, max_bpc, config);
++	return frl_backend_enabled() && frl_mode_config(mode, max_bpc, config);
 +}
 +EXPORT_SYMBOL(getHdmiFrlConfig);
 +
@@ -12853,8 +13131,7 @@ index 000000000000..8db6c31dc025
 +	if (hdmi_ic_type == HDMI_IC_TYPE_FLAVA3)
 +		return setHdmiVideoConfigFlava3(mode, bpc, yuv422, source_vrr,
 +					      generation, result);
-+	setHdmiVideoConfigVerde(mode);
-+	return 0;
++	return setHdmiVideoConfigVerde(mode, bpc, yuv422, source_vrr, generation, result);
 +}
 +EXPORT_SYMBOL(sceHdmiSetVideoConfigResult);
 +
@@ -12869,15 +13146,27 @@ index 000000000000..8db6c31dc025
 +{
 +	if (hdmi_ic_type == HDMI_IC_TYPE_FLAVA3) {
 +		setHdrConfigFlava3(frame, bt2020);
++		return;
 +	}
++	guard(mutex)(&verde_if_lock);
++	verde_if.bt2020 = bt2020;
++	verde_if.hdr = frame && frame->eotf != HDMI_EOTF_TRADITIONAL_GAMMA_SDR;
++	if (verde_if.hdr)
++		verde_if.frame = *frame;
++	verde_if_update();
 +}
 +EXPORT_SYMBOL(sceHdmiSetHdrConfig);
 +
 +/* The converter resets RGB range signaling to full on each modeset. */
 +void sceHdmiSetRgbRange(bool limited)
 +{
-+	if (hdmi_ic_type == HDMI_IC_TYPE_FLAVA3)
++	if (hdmi_ic_type == HDMI_IC_TYPE_FLAVA3) {
 +		setRgbRangeFlava3(limited);
++		return;
++	}
++	guard(mutex)(&verde_if_lock);
++	verde_if.limited = limited;
++	verde_if_update();
 +}
 +EXPORT_SYMBOL(sceHdmiSetRgbRange);
 +
@@ -13054,8 +13343,7 @@ index 000000000000..8db6c31dc025
 +		.y444_depths = BIT(8) |
 +			(info->edid_hdmi_ycbcr444_dc_modes & DRM_EDID_HDMI_DC_30 ? BIT(10) : 0) |
 +			(info->edid_hdmi_ycbcr444_dc_modes & DRM_EDID_HDMI_DC_36 ? BIT(12) : 0),
-+		.enabled = READ_ONCE(frl_4k120) && hdmi_ic_type == HDMI_IC_TYPE_FLAVA3 &&
-+			   frl_wiring_valid(),
++		.enabled = frl_backend_enabled(),
 +	};
 +	enum ps5_hdmi_plan_status status;
 +	u8 rate, y420_mode, vic = drm_match_cea_mode(mode);
@@ -13104,6 +13392,9 @@ index 000000000000..8db6c31dc025
 +		caps.formats |= BIT(PS5_HDMI_420);
 +	if (drm_mode_is_420_only(info, mode) || y420_mode & Y420_ONLY)
 +		caps.formats &= BIT(PS5_HDMI_420);
++	/* The VERDE path sends RGB and 4:2:2 only. */
++	if (hdmi_ic_type == HDMI_IC_TYPE_VERDE)
++		caps.formats &= BIT(PS5_HDMI_RGB) | BIT(PS5_HDMI_422);
 +	in.ycbcr422 = true;
 +	policy_reason = frl_4k120_reason(&in);
 +	if (!frl_edid_valid) {
@@ -13222,9 +13513,33 @@ index 000000000000..8db6c31dc025
 + */
 +bool isHdmiDeepColorSupported(void)
 +{
-+	return hdmi_ic_type == HDMI_IC_TYPE_FLAVA3;
++	return hdmi_ic_type == HDMI_IC_TYPE_FLAVA3 || READ_ONCE(verde_deep_colour);
 +}
 +EXPORT_SYMBOL(isHdmiDeepColorSupported);
++
++/* Highest bpc amdgpu may try for @mode; FLAVA3 keeps the requested value. */
++unsigned int ps5_hdmi_bpc_limit(const struct drm_display_mode *mode,
++				const struct drm_display_info *info, unsigned int requested)
++{
++	unsigned int bpc, khz;
++
++	if (hdmi_ic_type == HDMI_IC_TYPE_FLAVA3)
++		return requested;
++	/* The FRL plan picks the depth for these modes. */
++	if (READ_ONCE(verde_frl) && (isHdmiFrlTiming(mode) || drm_match_cea_mode(mode) == 97))
++		return requested;
++	requested = requested ?: 16;
++	if (!READ_ONCE(verde_deep_colour))
++		return min(requested, 8U);
++	khz = min(info->max_tmds_clock ?: 165000, 600000);
++	if (!info->hdmi.scdc.supported || !info->hdmi.scdc.scrambling.supported)
++		khz = min(khz, 340000U);
++	for (bpc = 12; bpc > 8; bpc -= 2)
++		if (bpc <= requested && (u64)mode->clock * bpc <= (u64)khz * 8)
++			return bpc;
++	return 8;
++}
++EXPORT_SYMBOL(ps5_hdmi_bpc_limit);
 +
 +static DEFINE_MUTEX(hdmi_edid_lock);
 +static const struct drm_edid *real_edid;
@@ -13358,6 +13673,7 @@ index 000000000000..8db6c31dc025
 +		frl_failed = false;
 +		frl_edid_valid = false;
 +		WRITE_ONCE(sink_allm, false);
++		WRITE_ONCE(sink_hf_vrr, false);
 +		allm_reset_locked();
 +		mutex_unlock(&frl_state_lock);
 +		if (strike)
@@ -13387,7 +13703,7 @@ index 000000000000..8db6c31dc025
 +		u16 size = get_unaligned_le16(msg->data + 2);
 +		const struct drm_edid *edid = NULL;
 +		u8 byte0 = 0, frl_rate = 0, rate_max, max_frl = 0, dsc_frl = 0;
-+		bool same, ycbcr422 = false, ycbcr444 = false, allm_cap = false;
++		bool same, ycbcr422 = false, ycbcr444 = false, allm_cap = false, hf_vrr = false;
 +		char vendor[4] = "";
 +		u16 product = 0;
 +		u32 crc = 0;
@@ -13408,6 +13724,7 @@ index 000000000000..8db6c31dc025
 +			ycbcr444 = edid_cta_ycbcr444(&msg->data[4], size);
 +			edid_cta_y420(&msg->data[4], size, y420_modes);
 +			allm_cap = edid_hf_allm(&msg->data[4], size);
++			hf_vrr = edid_hf_vrr(&msg->data[4], size);
 +			edid_hf_frl(&msg->data[4], size, &max_frl, &dsc_frl);
 +			edid_vendor(&msg->data[4], vendor, &product);
 +		}
@@ -13422,6 +13739,7 @@ index 000000000000..8db6c31dc025
 +			ycbcr422 = false;
 +			ycbcr444 = false;
 +			allm_cap = false;
++			hf_vrr = false;
 +		}
 +		mutex_lock(&frl_state_lock);
 +		if (!edid || !frl_edid_valid || crc != frl_edid_crc) {
@@ -13443,6 +13761,7 @@ index 000000000000..8db6c31dc025
 +		WRITE_ONCE(sink_cta_422, ycbcr422);
 +		WRITE_ONCE(sink_cta_444, ycbcr444);
 +		WRITE_ONCE(sink_allm, allm_cap);
++		WRITE_ONCE(sink_hf_vrr, hf_vrr);
 +		WRITE_ONCE(frl_trained_rate, frl_rate);
 +		mutex_unlock(&frl_state_lock);
 +		WRITE_ONCE(frl_decision_logged, -1);
@@ -19443,10 +19762,10 @@ index fbb62f7c3111..18edd8279773 100644
  extern void dmi_setup(void);
 diff --git a/include/linux/ps5.h b/include/linux/ps5.h
 new file mode 100755
-index 000000000000..34a1e086ef55
+index 000000000000..6864cab31537
 --- /dev/null
 +++ b/include/linux/ps5.h
-@@ -0,0 +1,281 @@
+@@ -0,0 +1,283 @@
 +/* SPDX-License-Identifier: GPL-2.0-only */
 +
 +#ifndef _LINUX_PS5_H
@@ -19640,6 +19959,8 @@ index 000000000000..34a1e086ef55
 +bool isHdmiHdrSupported(void);
 +bool isHdmiNative420Supported(void);
 +bool isHdmiDeepColorSupported(void);
++unsigned int ps5_hdmi_bpc_limit(const struct drm_display_mode *mode,
++				const struct drm_display_info *info, unsigned int requested);
 +
 +int icc_nvs_write(u32 partition, u16 offset, u16 length, const void *data);
 +int icc_nvs_read(u32 partition, u16 offset, u16 length, void *data);
@@ -19806,10 +20127,10 @@ index 24015c73a67f..6c134508a759 100644
  	{ PCI_VDEVICE(ATI, 0x15b3),
 diff --git a/drivers/ps5/frl-detect.inc b/drivers/ps5/frl-detect.inc
 new file mode 100644
-index 000000000000..e7f1b56d404a
+index 000000000000..46fd8119d33d
 --- /dev/null
 +++ b/drivers/ps5/frl-detect.inc
-@@ -0,0 +1,224 @@
+@@ -0,0 +1,260 @@
 +/* SPDX-License-Identifier: GPL-2.0-only */
 +/*
 + * EDID inputs for the 4K120 decision, and the decision itself. No IC access.
@@ -19974,6 +20295,42 @@ index 000000000000..e7f1b56d404a
 +		}
 +	}
 +	return found;
++}
++
++/* HDMI VRR in the HF-VSDB or HF-SCDB: a nonzero VRRmax at +9 and +10. */
++static bool edid_hf_vrr(const u8 *edid, size_t size)
++{
++	size_t off, i;
++
++	if (size < EDID_LENGTH)
++		return false;
++	size = min(size, (size_t)(edid[126] + 1) * EDID_LENGTH);
++	for (off = EDID_LENGTH; off + EDID_LENGTH <= size; off += EDID_LENGTH) {
++		const u8 *blk = edid + off;
++		u8 end = blk[2], sum = 0;
++
++		if (blk[0] != 2 || blk[1] < 3 || end < 4 || end > 127)
++			continue;
++		for (i = 0; i < EDID_LENGTH; i++)
++			sum += blk[i];
++		if (sum)
++			continue;
++		for (i = 4; i < end; i += 1 + (blk[i] & 31))
++			if (i + 1 + (blk[i] & 31) > end)
++				break;
++		if (i != end)
++			continue;
++		for (i = 4; i < end; i += 1 + (blk[i] & 31)) {
++			u8 tag = blk[i] >> 5, len = blk[i] & 31;
++
++			if (((tag == 3 && len >= 3 && blk[i + 1] == 0xd8 &&
++			      blk[i + 2] == 0x5d && blk[i + 3] == 0xc4) ||
++			     (tag == 7 && len >= 1 && blk[i + 1] == 0x79)) &&
++			    len >= 10 && ((blk[i + 9] & 0xc0) || blk[i + 10]))
++				return true;
++		}
++	}
++	return false;
 +}
 +
 +/* Manufacturer ID and product code, for the log. */
@@ -20154,10 +20511,10 @@ index 000000000000..f7a470b62f5c
 +};
 diff --git a/drivers/ps5/frl-native.inc b/drivers/ps5/frl-native.inc
 new file mode 100644
-index 000000000000..1342ce42d175
+index 000000000000..169cfec8c5c1
 --- /dev/null
 +++ b/drivers/ps5/frl-native.inc
-@@ -0,0 +1,429 @@
+@@ -0,0 +1,431 @@
 +/* SPDX-License-Identifier: GPL-2.0-only */
 +/* Native FRL setup for FLAVA3. */
 +#include "frl-native-msgs.h"
@@ -20453,6 +20810,8 @@ index 000000000000..1342ce42d175
 +	    plan->rate_mask != BIT(4) || plan->hdcp < 1 || plan->hdcp > 3 ||
 +	    (plan->start != 0x02 && plan->start != 0x42) || plan->verify_ms > 10000)
 +		return -EINVAL;
++	if (hdmi_ic_type == HDMI_IC_TYPE_VERDE)
++		return verde_apply_plan(plan, source_vrr, result);
 +	mutex_lock(&frl_setup_lock);
 +	WRITE_ONCE(vrr_setup_pending, ps5_hdmi_vrr_enabled() &&
 +		   (source_vrr || ps5_hdmi_vrr_allowed(mode)));
@@ -20587,6 +20946,184 @@ index 000000000000..1342ce42d175
 +
 +#undef FRL_STEP
 +#undef FRL_SEND
+diff --git a/drivers/ps5/frl-verde.inc b/drivers/ps5/frl-verde.inc
+new file mode 100644
+index 000000000000..d635eb4e213c
+--- /dev/null
++++ b/drivers/ps5/frl-verde.inc
+@@ -0,0 +1,172 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* FRL setup for VERDE, in the order the PS5 OS uses. */
++
++/* Turn the commands queued since i2c_init() into registered sequence @id. */
++static int verde_register_sequence(u8 id)
++{
++	u8 seq[255];
++	size_t len = i2c_ctx.msg_cur - i2c_ctx.msg_buf;
++
++	if (len > sizeof(seq)) {
++		mutex_unlock(&i2c_lock);
++		return -E2BIG;
++	}
++	seq[0] = id;
++	seq[1] = len;
++	seq[2] = i2c_ctx.msg_hdr->count;
++	seq[3] = 0;
++	memcpy(seq + 4, i2c_ctx.msg_buf + 4, len - 4);
++	i2c_ctx.msg_cur = i2c_ctx.msg_buf + sizeof(*i2c_ctx.msg_hdr);
++	i2c_ctx.msg_hdr->count = 0;
++	i2c_cmd_4_16(seq, len);
++	return i2c_exec();
++}
++
++/* Sequence 0x84: the HDMI side, run by the firmware after training. */
++static int verde_frl_output_sequence(bool vrr)
++{
++	i2c_init(0);
++	i2c_waitset(0x102, 0x01);
++	i2c_cmd_2_1(0x13, 0x10);
++	queueVerdeAudio();
++	i2c_cmd_2_1(0x9200, vrr);
++	i2c_cmd_2_1(0x109, 0x04);
++	i2c_waitclear(0x108, 0x10);
++	i2c_mask(0x108, 0x11, 0x17);
++	i2c_waitset(0x13, 0x40);
++	i2c_cmd_2_1(0x13, 0x40);
++	i2c_cmd_3_5(0x4001, 0x03);
++	i2c_cmd_2_1(0x11, 0x01);
++	return verde_register_sequence(0x84);
++}
++
++/* Sequence 0x8a: InfoFrames and packet enables, then unmute. */
++static int verde_frl_packet_sequence(const struct ps5_hdmi_plan *plan, bool vrr, bool allm)
++{
++	const struct ps5_hdmi_frl_config *config = &plan->config;
++	u8 avi[18], packets[10], depth[9], drm[HDMI_INFOFRAME_SIZE(DRM)];
++	bool rgb = config->format == PS5_HDMI_RGB;
++
++	if (plan->hdr && hdmi_drm_infoframe_pack_only(&plan->metadata, drm, sizeof(drm)) !=
++	    sizeof(drm))
++		return -EINVAL;
++	verde_avi(avi, config->vic, config->format, plan->bt2020, config->limited);
++	verde_packets(packets, allm, plan->hdr, rgb && config->bpc > 8);
++	verde_depth(depth, config->bpc, config->format, true);
++
++	i2c_init(0);
++	i2c_begin_block();
++	i2c_write_data(0x3058, avi, sizeof(avi));
++	i2c_write_data(0x31d0, (u8 *)verde_spd, sizeof(verde_spd));
++	if (plan->hdr)
++		i2c_write_data(0x3102, drm + 1, sizeof(drm) - 1);
++	i2c_end_block();
++	i2c_begin_block();
++	if (allm)
++		i2c_write_data(0x30e0, (u8 *)verde_hf_vsif, sizeof(verde_hf_vsif));
++	i2c_write_data(0x3033, depth, sizeof(depth));
++	i2c_write_data(0x307a, (u8[]){0x01, 0x0a, 0x70, 0x01, 0x00, 0x00, 0x00, 0x00}, 8);
++	if (vrr)
++		queueVerdeVrr(0, true);
++	i2c_write_data(0x3000, packets, sizeof(packets));
++	i2c_end_block();
++	i2c_cmd_2_1(0x300a, 0x01);
++	i2c_waitset(0x13, 0x80);
++	i2c_cmd_2_1(0x13, 0x80);
++	if (vrr) {
++		i2c_cmd_2_1(0x3261, 0x01);
++		i2c_cmd_2_1(0x3262, 0x02);
++		i2c_cmd_2_1(0x300a, 0x01);
++		i2c_waitset(0x13, 0x80);
++		i2c_cmd_2_1(0x13, 0x80);
++	}
++	i2c_mask(0x105, 0x01, 0x03);
++	return verde_register_sequence(0x8a);
++}
++
++static int verde_apply_plan(const struct ps5_hdmi_plan *plan, bool source_vrr,
++			    struct ps5_hdmi_setup_result *result)
++{
++	const struct drm_display_mode *mode = &plan->mode;
++	const struct ps5_hdmi_frl_config *config = &plan->config;
++	unsigned int generation = plan->generation;
++	u8 status = 0;
++	bool vrr, allm;
++	int ret;
++
++	mutex_lock(&frl_setup_lock);
++	if (generation != frl_get_sink_generation()) {
++		ret = -ENODEV;
++		goto out;
++	}
++	if (frl_sink_failed()) {
++		pr_info("verde FRL: not started, it failed earlier for this sink\n");
++		ret = -EIO;
++		goto out;
++	}
++	vrr = ps5_hdmi_vrr_allowed(mode);
++	if (source_vrr && !vrr) {
++		ret = -ENODEV;
++		if (vrr_fail_generation(generation)) {
++			result->generation = generation;
++			result->retry_fixed = true;
++			ret = -EAGAIN;
++		}
++		goto out;
++	}
++	allm = allm_wanted();
++	ret = frl_reg_read(0xf3, 1, &status);
++	if (ret)
++		goto fail;
++	initVerdeStatus(status);
++	sceHdmiSetAudioMute(1);
++	linkConfigVerde(mode);
++	ret = verde_frl_output_sequence(vrr);
++	if (ret)
++		goto fail;
++	ret = verde_frl_packet_sequence(plan, vrr, allm);
++	if (ret)
++		goto fail;
++	ret = configDpLinkTrainingVerde(vrr);
++	if (ret)
++		goto fail;
++	if (generation != frl_get_sink_generation()) {
++		ret = -ENODEV;
++		goto out;
++	}
++	i2c_init(0);
++	i2c_mask(0x104, 0x02, 0x02);
++	i2c_cmd_5_3(0x02);
++	ret = i2c_exec();
++	if (ret)
++		goto fail;
++
++	mutex_lock(&verde_if_lock);
++	verde_if.valid = READ_ONCE(verde_infoframes);
++	verde_if.vic = config->vic;
++	verde_if.format = config->format;
++	verde_if.limited = config->limited;
++	verde_if.bt2020 = plan->bt2020;
++	verde_if.hdr = plan->hdr;
++	if (plan->hdr)
++		verde_if.frame = plan->metadata;
++	verde_avi(verde_if.avi, verde_if.vic, verde_if.format, verde_if.bt2020, verde_if.limited);
++	verde_if.drm_sent = plan->hdr &&
++		hdmi_drm_infoframe_pack_only(&plan->metadata, verde_if.drm,
++					     sizeof(verde_if.drm)) == sizeof(verde_if.drm);
++	mutex_unlock(&verde_if_lock);
++	allm_record(generation, allm, true);
++	WRITE_ONCE(vrr_setup_pending, false);
++	pr_info("verde FRL: VIC %u, format %u, %u-bit%s%s%s\n", config->vic, config->format,
++		config->bpc, plan->hdr ? ", HDR" : "", vrr ? ", VRR" : "", allm ? ", ALLM" : "");
++	mutex_unlock(&frl_setup_lock);
++	return 0;
++
++fail:
++	pr_err("verde FRL setup failed: %d\n", ret);
++	initVerde();
++	frl_finish_failure(plan, result, 0);
++out:
++	mutex_unlock(&frl_setup_lock);
++	return ret;
++}
 diff --git a/drivers/ps5/frl-plan.inc b/drivers/ps5/frl-plan.inc
 new file mode 100644
 index 000000000000..060b4e15e194
