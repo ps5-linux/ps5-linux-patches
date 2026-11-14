@@ -10454,10 +10454,10 @@ index 000000000000..80953514df04
 +EXPORT_SYMBOL(ps5_gpufreq_register);
 diff --git a/drivers/ps5/hdmi.c b/drivers/ps5/hdmi.c
 new file mode 100755
-index 000000000000..8c4a7643492e
+index 000000000000..bd604171c460
 --- /dev/null
 +++ b/drivers/ps5/hdmi.c
-@@ -0,0 +1,2483 @@
+@@ -0,0 +1,2487 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +
 +#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -11640,7 +11640,7 @@ index 000000000000..8c4a7643492e
 +		/* Set manual timing */
 +		i2c_write_data(0x7227, (u8[]){0x05, 0x00}, 2);
 +		i2c_write_data(0x7070, (u8[]){0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, 6);
-+	} else if (vic == 16 || vic == 63) {
++	} else if (vic == 16 || vic == 63 || vic == 64) {
 +		/* Set VIC and content type */
 +		i2c_write_data(0x7227, (u8[]){vic, 0x00}, 2);
 +		i2c_write_data(0x7070, (u8[]){vic, vic, 0x00, 0x00, 0x00, 0x00}, 6);
@@ -12649,6 +12649,10 @@ index 000000000000..8c4a7643492e
 +
 +	if (!getHdmiExtendedModes())
 +		return false;
++
++	/* 1080p100 is in the converter's VIC table. */
++	if (drm_match_cea_mode(mode) == 64)
++		return true;
 +
 +	/* Use the stock 1440p setup up to 297 MHz. */
 +	if (mode->hdisplay == 2560 && mode->vdisplay == 1440 &&
