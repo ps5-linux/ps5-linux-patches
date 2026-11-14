@@ -10007,6 +10007,124 @@ index 000000000000..bce373429e1c
 +MODULE_LICENSE("GPL");
 +MODULE_DESCRIPTION("PS5 fan hwmon driver");
 +MODULE_ALIAS("platform:ps5-fan");
+diff --git a/drivers/ps5/frl-drop.inc b/drivers/ps5/frl-drop.inc
+new file mode 100644
+index 000000000000..73602117b1ca
+--- /dev/null
++++ b/drivers/ps5/frl-drop.inc
+@@ -0,0 +1,112 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Callers hold frl_state_lock. */
++struct frl_drop_state {
++	struct ps5_hdmi_plan last, pending, strike;
++	struct frl_failure_cache saved;
++	unsigned long started, retry_started;
++	u32 crc, pending_crc, strike_crc, generation;
++	u32 starts, last_count, strike_count;
++	bool last_valid, pending_valid, second, strike_valid, retry_valid;
++};
++
++static struct frl_drop_state frl_drop;
++
++static void frl_drop_reset(void)
++{
++	lockdep_assert_held(&frl_state_lock);
++	memset(&frl_drop, 0, sizeof(frl_drop));
++}
++
++static bool frl_drop_same_plan(const struct ps5_hdmi_plan *a,
++			       const struct ps5_hdmi_plan *b)
++{
++	return frl_recovery_same_mode(&a->mode, &b->mode) &&
++	       a->config.format == b->config.format && a->config.bpc == b->config.bpc &&
++	       a->config.limited == b->config.limited &&
++	       a->hdr == b->hdr && a->bt2020 == b->bt2020;
++}
++
++/* Repeated starts in one reconnect count once. */
++static u32 frl_drop_note_start(const struct ps5_hdmi_plan *plan, u32 crc,
++			       u32 generation, unsigned long started)
++{
++	u32 count;
++
++	lockdep_assert_held(&frl_state_lock);
++	if (frl_drop.strike_valid && frl_drop.retry_valid && frl_drop.last_count == frl_drop.starts &&
++	    frl_drop.last_count == frl_drop.strike_count + 1 &&
++	    frl_drop.generation == generation && frl_drop.crc == crc &&
++	    frl_drop.strike_crc == crc &&
++	    frl_drop_same_plan(plan, &frl_drop.last) &&
++	    frl_drop_same_plan(plan, &frl_drop.strike) &&
++	    jiffies_to_msecs(started - frl_drop.retry_started) <= READ_ONCE(frl_drop_ms))
++		frl_drop.strike_count = frl_drop.last_count;
++	frl_drop.last_valid = false;
++	count = ++frl_drop.starts;
++	if (frl_drop.strike_valid && !frl_drop.retry_valid &&
++	    count == frl_drop.strike_count + 1) {
++		frl_drop.retry_started = started;
++		frl_drop.retry_valid = true;
++	}
++	return count;
++}
++
++/* Called before unplug clears the failure cache. */
++static unsigned int frl_drop_note_unplug(unsigned int window, unsigned int *since)
++{
++	lockdep_assert_held(&frl_state_lock);
++	if (!window) {
++		frl_drop_reset();
++		return 0;
++	}
++	if (!frl_drop.last_valid) {
++		if (!frl_drop.pending_valid)
++			frl_drop.strike_valid = false;
++		return 0;
++	}
++	frl_drop.last_valid = false;
++	*since = jiffies_to_msecs(jiffies - frl_drop.started);
++	if (!frl_edid_valid || !READ_ONCE(frl_output_active) || *since > window) {
++		frl_drop.pending_valid = false;
++		frl_drop.strike_valid = false;
++		return 0;
++	}
++	frl_drop.pending = frl_drop.last;
++	frl_drop.pending_crc = frl_drop.crc;
++	frl_drop.saved = frl_failures;
++	frl_drop.pending_valid = true;
++	frl_drop.second = frl_drop.strike_valid &&
++		frl_drop.strike_crc == frl_drop.crc &&
++		frl_drop.last_count == frl_drop.strike_count + 1 &&
++		frl_drop_same_plan(&frl_drop.last, &frl_drop.strike);
++	if (!frl_drop.second) {
++		frl_drop.strike = frl_drop.last;
++		frl_drop.strike_crc = frl_drop.crc;
++		frl_drop.strike_count = frl_drop.last_count;
++		frl_drop.strike_valid = true;
++		frl_drop.retry_valid = false;
++	}
++	return frl_drop.second ? 2 : 1;
++}
++
++/* Only when the same EDID returns. */
++static bool frl_drop_note_edid(bool valid, u32 crc)
++{
++	lockdep_assert_held(&frl_state_lock);
++	if (!READ_ONCE(frl_drop_ms) || !valid ||
++	    (frl_drop.pending_valid && crc != frl_drop.pending_crc) ||
++	    (frl_drop.strike_valid && crc != frl_drop.strike_crc)) {
++		frl_drop_reset();
++		return false;
++	}
++	if (!frl_drop.pending_valid)
++		return false;
++	frl_drop.pending_valid = false;
++	frl_failures = frl_drop.saved;
++	if (!frl_drop.second)
++		return false;
++	frl_drop.strike_valid = false;
++	if (!READ_ONCE(frl_recovery) || !frl_failure_add(&frl_failures, &frl_drop.pending))
++		frl_failed = true;
++	return true;
++}
 diff --git a/drivers/ps5/gpufreq.c b/drivers/ps5/gpufreq.c
 new file mode 100644
 index 000000000000..80953514df04
@@ -10323,10 +10441,10 @@ index 000000000000..80953514df04
 +EXPORT_SYMBOL(ps5_gpufreq_register);
 diff --git a/drivers/ps5/hdmi.c b/drivers/ps5/hdmi.c
 new file mode 100755
-index 000000000000..f30c5f88f711
+index 000000000000..8c4a7643492e
 --- /dev/null
 +++ b/drivers/ps5/hdmi.c
-@@ -0,0 +1,2461 @@
+@@ -0,0 +1,2483 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +
 +#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -10361,6 +10479,10 @@ index 000000000000..f30c5f88f711
 +static unsigned int frl_yuv420 = 1;
 +module_param(frl_yuv420, uint, 0644);
 +MODULE_PARM_DESC(frl_yuv420, "Native FRL 4:2:0: 0 = disabled, 1 = fallback (default), 2 = prefer when the mode permits it");
++
++static unsigned int frl_drop_ms;
++module_param(frl_drop_ms, uint, 0644);
++MODULE_PARM_DESC(frl_drop_ms, "Reject a native FRL plan after two consecutive early display drops (0 = off)");
 +
 +static bool frl_recovery = true;
 +module_param(frl_recovery, bool, 0644);
@@ -10530,6 +10652,8 @@ index 000000000000..f30c5f88f711
 +
 +static struct frl_failure_cache frl_failures;
 +
++#include "frl-drop.inc"
++
 +static bool frl_sink_failed(void)
 +{
 +	bool failed;
@@ -10653,6 +10777,7 @@ index 000000000000..f30c5f88f711
 +		mutex_lock(&frl_state_lock);
 +		frl_failed = false;
 +		memset(&frl_failures, 0, sizeof(frl_failures));
++		frl_drop_reset();
 +		mutex_unlock(&frl_state_lock);
 +	}
 +	WRITE_ONCE(frl_decision_logged, -1);
@@ -12676,7 +12801,10 @@ index 000000000000..f30c5f88f711
 +	}
 +	hdmi_log_notification(msg);
 +	if (msg->data[1] == 0x01) {
++		unsigned int since = 0, strike;
++
 +		mutex_lock(&frl_state_lock);
++		strike = frl_drop_note_unplug(READ_ONCE(frl_drop_ms), &since);
 +		frl_sink_generation++;
 +		memset(&frl_failures, 0, sizeof(frl_failures));
 +		frl_failed = false;
@@ -12684,6 +12812,9 @@ index 000000000000..f30c5f88f711
 +		WRITE_ONCE(sink_allm, false);
 +		allm_reset_locked();
 +		mutex_unlock(&frl_state_lock);
++		if (strike)
++			pr_info("native FRL: display dropped %u ms after start, %s\n",
++				since, strike == 1 ? "retrying once" : "second strike");
 +		last_edid_size = 0;
 +		WRITE_ONCE(hdcp_abort_until, jiffies);
 +		hdmi_request_unplug();
@@ -12708,6 +12839,8 @@ index 000000000000..f30c5f88f711
 +		u16 product = 0;
 +		u32 crc = 0;
 +		u8 y420_modes[256] = {};
++		struct drm_display_mode dropped_mode;
++		bool dropped;
 +
 +		if (size < EDID_LENGTH || size > msg->length - sizeof(*msg) - 4) {
 +			pr_warn("bad EDID size %u\n", size);
@@ -12749,6 +12882,9 @@ index 000000000000..f30c5f88f711
 +		}
 +		frl_edid_valid = edid;
 +		frl_edid_crc = crc;
++		dropped = frl_drop_note_edid(edid, crc);
++		if (dropped)
++			dropped_mode = frl_drop.pending.mode;
 +		rate_max = frl_rate_max;
 +		memcpy(sink_y420_modes, y420_modes, sizeof(sink_y420_modes));
 +		WRITE_ONCE(sink_cta_422, ycbcr422);
@@ -12757,6 +12893,10 @@ index 000000000000..f30c5f88f711
 +		WRITE_ONCE(frl_trained_rate, frl_rate);
 +		mutex_unlock(&frl_state_lock);
 +		WRITE_ONCE(frl_decision_logged, -1);
++		if (dropped)
++			pr_info("native FRL: %ux%u@%d marked failed after two early drops\n",
++				dropped_mode.hdisplay, dropped_mode.vdisplay,
++				drm_mode_vrefresh(&dropped_mode));
 +
 +		last_edid_size = edid && size <= sizeof(last_edid) ? size : 0;
 +		memcpy(last_edid, &msg->data[4], last_edid_size);
@@ -18924,10 +19064,10 @@ index 000000000000..f7a470b62f5c
 +};
 diff --git a/drivers/ps5/frl-native.inc b/drivers/ps5/frl-native.inc
 new file mode 100644
-index 000000000000..5bb0dd8447bb
+index 000000000000..2c988c8cde40
 --- /dev/null
 +++ b/drivers/ps5/frl-native.inc
-@@ -0,0 +1,399 @@
+@@ -0,0 +1,415 @@
 +/* SPDX-License-Identifier: GPL-2.0-only */
 +/* Native FRL setup for FLAVA3. */
 +#include "frl-native-msgs.h"
@@ -19059,8 +19199,7 @@ index 000000000000..5bb0dd8447bb
 +}
 +
 +/*
-+ * 0x7019 bit 6 is set while the IC sends FRL: 43 on a trained link, 00 or 01
-+ * after a fallback to TMDS.
++ * 0x7019 bit 6 shows the requested FRL state, not training success.
 + * Returns the ms waited, or -ETIMEDOUT.
 + */
 +static int frl_wait_link(unsigned int timeout_ms, u8 *value)
@@ -19101,6 +19240,7 @@ index 000000000000..5bb0dd8447bb
 +	WRITE_ONCE(hdcp_abort_until, jiffies);
 +	mutex_lock(&frl_state_lock);
 +	frl_cleanup_failed = first != 0;
++	frl_drop.last_valid = false;
 +	mutex_unlock(&frl_state_lock);
 +	return first;
 +}
@@ -19210,6 +19350,8 @@ index 000000000000..5bb0dd8447bb
 +	struct hdmi_drm_infoframe sdr;
 +	unsigned int verify_ms = plan->verify_ms, generation = plan->generation;
 +	bool allm;
++	unsigned long started;
++	u32 start_count;
 +	int ret, cleanup;
 +
 +	if (!plan->frl || !frl_plan_valid(plan) ||
@@ -19273,6 +19415,10 @@ index 000000000000..5bb0dd8447bb
 +	/* Keep cleanup armed even if start partially succeeds. */
 +	WRITE_ONCE(frl_output_active, true);
 +	FRL_STEP(frl_send_start(start));
++	started = jiffies;
++	mutex_lock(&frl_state_lock);
++	start_count = frl_drop_note_start(plan, frl_edid_crc, generation, started);
++	mutex_unlock(&frl_state_lock);
 +	WRITE_ONCE(hdcp_abort_until, jiffies + msecs_to_jiffies(HDCP_ABORT_MS));
 +	FRL_STEP(FRL_SEND(spd));
 +	msleep(1000);
@@ -19311,6 +19457,16 @@ index 000000000000..5bb0dd8447bb
 +		pr_debug("native FRL: ALLM on\n");
 +	pr_info("native FRL: VIC %u, format %u, %u-bit, DP %u kbps, minimum FRL rate %u\n",
 +		config.vic, config.format, config.bpc, config.dp_kbps, config.min_rate);
++	mutex_lock(&frl_state_lock);
++	if (frl_edid_valid && generation == frl_sink_generation) {
++		frl_drop.last = *plan;
++		frl_drop.started = started;
++		frl_drop.crc = frl_edid_crc;
++		frl_drop.generation = generation;
++		frl_drop.last_count = start_count;
++		frl_drop.last_valid = true;
++	}
++	mutex_unlock(&frl_state_lock);
 +	mutex_unlock(&frl_setup_lock);
 +	return 0;
 +
