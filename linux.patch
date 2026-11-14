@@ -1580,7 +1580,7 @@ index 08ed1eb69558..71d9e999fdc9 100644
  	if (amdgpu_read_platform_bios(adev)) {
  		dev_info(adev->dev, "Fetched VBIOS from platform\n");
 diff --git a/drivers/gpu/drm/amd/amdgpu/amdgpu_device.c b/drivers/gpu/drm/amd/amdgpu/amdgpu_device.c
-index 9269e780feb7..45b417fc71b9 100644
+index 9269e780feb7..f3abc19636cf 100644
 --- a/drivers/gpu/drm/amd/amdgpu/amdgpu_device.c
 +++ b/drivers/gpu/drm/amd/amdgpu/amdgpu_device.c
 @@ -1855,6 +1855,26 @@ static int amdgpu_device_parse_gpu_info_fw(struct amdgpu_device *adev)
@@ -1651,6 +1651,19 @@ index 9269e780feb7..45b417fc71b9 100644
  	spin_lock_init(&adev->mm_stats.lock);
  	spin_lock_init(&adev->virt.rlcg_reg_lock);
  	spin_lock_init(&adev->wb.lock);
+@@ -4897,6 +4937,12 @@ bool amdgpu_device_should_recover_gpu(struct amdgpu_device *adev)
+ 	if (amdgpu_gpu_recovery == 0)
+ 		goto disabled;
+ 
++#ifdef CONFIG_X86_PS5
++	/* No PSP/SMU reset on PS5; only per-queue reset works. */
++	if (amdgpu_gpu_recovery == -1 && adev->asic_type == CHIP_CYAN_SKILLFISH)
++		goto disabled;
++#endif
++
+ 	/* Skip soft reset check in fatal error mode */
+ 	if (!amdgpu_ras_is_poison_mode_supported(adev))
+ 		return true;
 diff --git a/drivers/gpu/drm/amd/amdgpu/amdgpu_discovery.c b/drivers/gpu/drm/amd/amdgpu/amdgpu_discovery.c
 index 7ab2ad2c5ba9..cd16717fdc9e 100644
 --- a/drivers/gpu/drm/amd/amdgpu/amdgpu_discovery.c
@@ -2820,7 +2833,7 @@ index 4594824985e1..63ed43f739bb 100644
  	if (q->properties.is_gws) {
  		dqm->gws_queue_count--;
 diff --git a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c
-index 47a0ff2ed035..f5734ab97115 100644
+index 47a0ff2ed035..836296d306a5 100644
 --- a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c
 +++ b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c
 @@ -87,6 +87,13 @@
@@ -3002,7 +3015,7 @@ index 47a0ff2ed035..f5734ab97115 100644
  	kfree(aencoder);
  	kfree(aconnector);
  
-@@ -5024,6 +5105,106 @@ STATIC_IFN_KUNIT void dm_enable_per_frame_crtc_master_sync(struct dc_state *cont
+@@ -5024,6 +5105,109 @@ STATIC_IFN_KUNIT void dm_enable_per_frame_crtc_master_sync(struct dc_state *cont
  }
  EXPORT_IF_KUNIT(dm_enable_per_frame_crtc_master_sync);
  
@@ -3036,7 +3049,9 @@ index 47a0ff2ed035..f5734ab97115 100644
 +}
 +
 +static int dm_ps5_hdmi_enable(struct dc_stream_state *stream,
-+			      const struct drm_connector_state *state)
++			      const struct drm_connector_state *state, bool source_vrr,
++			      unsigned int generation,
++			      struct ps5_hdmi_setup_result *result)
 +{
 +	struct drm_display_mode mode;
 +	bool frl;
@@ -3067,7 +3082,7 @@ index 47a0ff2ed035..f5734ab97115 100644
 +		dm_state = to_dm_connector_state(state);
 +		plan = &dm_state->ps5_hdmi_plan;
 +		bpc = amdgpu_dm_convert_dc_color_depth_into_bpc(stream->timing.display_color_depth);
-+		if (!dm_state->ps5_hdmi_plan_valid ||
++		if (!dm_state->ps5_hdmi_plan_valid || plan->generation != generation ||
 +		    !drm_mode_match(&plan->mode, &mode, DRM_MODE_MATCH_TIMINGS |
 +				    DRM_MODE_MATCH_CLOCK | DRM_MODE_MATCH_FLAGS |
 +				    DRM_MODE_MATCH_ASPECT_RATIO) ||
@@ -3080,7 +3095,7 @@ index 47a0ff2ed035..f5734ab97115 100644
 +		     plan->config.limited != dm_ps5_rgb_limited(stream)) ||
 +		    stream->timing.flags.DSC || plan->config.bpc != bpc)
 +			return -EINVAL;
-+		ret = ps5_hdmi_apply_plan(plan);
++		ret = ps5_hdmi_apply_plan_result(plan, source_vrr, result);
 +		if (ret)
 +			return ret;
 +	} else {
@@ -3088,7 +3103,8 @@ index 47a0ff2ed035..f5734ab97115 100644
 +		unsigned int bpc = amdgpu_dm_convert_dc_color_depth_into_bpc(depth);
 +		bool yuv422 = stream->timing.pixel_encoding == PIXEL_ENCODING_YCBCR422;
 +
-+		ret = sceHdmiSetVideoConfig(&mode, bpc, yuv422);
++		ret = sceHdmiSetVideoConfigResult(&mode, bpc, yuv422, source_vrr,
++						  generation, result);
 +		if (ret)
 +			return ret;
 +	}
@@ -3109,7 +3125,7 @@ index 47a0ff2ed035..f5734ab97115 100644
  /**
   * amdgpu_dm_atomic_commit_tail() - AMDgpu DM's commit tail implementation.
   * @state: The atomic state to commit
-@@ -5054,12 +5235,98 @@ static void amdgpu_dm_atomic_commit_tail(struct drm_atomic_commit *state)
+@@ -5054,12 +5238,112 @@ static void amdgpu_dm_atomic_commit_tail(struct drm_atomic_commit *state)
  	drm_atomic_helper_update_legacy_modeset_state(dev, state);
  	drm_dp_mst_atomic_wait_for_dependencies(state);
  
@@ -3140,8 +3156,13 @@ index 47a0ff2ed035..f5734ab97115 100644
 +					continue;
 +				}
 +				/* Init failures are logged; the video setup result decides. */
-+				sceHdmiInitVideoConfig();
-+				dm_new_crtc_state->ps5_hdmi_setup_error = 0;
++				{
++					int init_error = sceHdmiInitVideoConfig();
++
++					/* Retry fixed only after a clean follow reset. */
++					dm_new_crtc_state->ps5_hdmi_setup_error =
++						ps5_hdmi_vrr_failed() ? init_error : 0;
++				}
 +			}
 +		}
 +	}
@@ -3174,13 +3195,22 @@ index 47a0ff2ed035..f5734ab97115 100644
 +				struct dm_connector_state *conn =
 +					to_dm_connector_state(new_con_state);
 +				int error = dm_new_crtc_state->ps5_hdmi_setup_error;
++				struct ps5_hdmi_setup_result result = { 0 };
++				u32 generation = ps5_hdmi_connection_generation();
++
++				if (conn->ps5_hdmi_recovery)
++					generation = conn->ps5_hdmi_recovery->status.generation;
 +
 +				if (!dm_ps5_recovery_start(conn))
 +					error = -ECANCELED;
 +				if (!error)
 +					error = dm_ps5_hdmi_enable(dm_new_crtc_state->stream,
-+								   new_con_state);
-+				dm_ps5_recovery_complete(conn, dm_new_crtc_state->stream, error);
++								   new_con_state,
++								   dm_new_crtc_state->vrr_supported,
++								   generation,
++								   &result);
++				dm_ps5_recovery_complete(conn, dm_new_crtc_state->stream,
++							 error, &result);
 +				if (error) {
 +					set_bit(drm_crtc_index(crtc), &ps5_frl_fallback_crtcs);
 +					mod_delayed_work(system_dfl_wq, &ps5_frl_fallback_work, 0);
@@ -3208,7 +3238,7 @@ index 47a0ff2ed035..f5734ab97115 100644
  	amdgpu_dm_update_hdcp(state);
  
  	/* Handle connector state changes */
-@@ -5087,6 +5354,15 @@ static void amdgpu_dm_atomic_commit_tail(struct drm_atomic_commit *state)
+@@ -5087,6 +5371,15 @@ static void amdgpu_dm_atomic_commit_tail(struct drm_atomic_commit *state)
  		dm_new_crtc_state = to_dm_crtc_state(new_crtc_state);
  		dm_old_crtc_state = to_dm_crtc_state(old_crtc_state);
  
@@ -3224,7 +3254,7 @@ index 47a0ff2ed035..f5734ab97115 100644
  		scaling_changed = is_scaling_state_different(dm_new_con_state,
  							     dm_old_con_state);
  
-@@ -5118,6 +5394,12 @@ static void amdgpu_dm_atomic_commit_tail(struct drm_atomic_commit *state)
+@@ -5118,6 +5411,12 @@ static void amdgpu_dm_atomic_commit_tail(struct drm_atomic_commit *state)
  				= amdgpu_dm_get_output_color_space(&dm_new_crtc_state->stream->timing, new_con_state);
  
  			stream_update.output_color_space = &dm_new_crtc_state->stream->output_color_space;
@@ -3237,7 +3267,7 @@ index 47a0ff2ed035..f5734ab97115 100644
  		}
  
  		if (abm_changed) {
-@@ -5129,6 +5411,9 @@ static void amdgpu_dm_atomic_commit_tail(struct drm_atomic_commit *state)
+@@ -5129,6 +5428,9 @@ static void amdgpu_dm_atomic_commit_tail(struct drm_atomic_commit *state)
  		if (hdr_changed) {
  			amdgpu_dm_fill_hdr_info_packet(new_con_state, &hdr_packet);
  			stream_update.hdr_static_metadata = &hdr_packet;
@@ -3247,7 +3277,35 @@ index 47a0ff2ed035..f5734ab97115 100644
  		}
  
  		status = dc_stream_get_status(dm_new_crtc_state->stream);
-@@ -5457,6 +5742,30 @@ static int dm_update_crtc_state(struct amdgpu_display_manager *dm,
+@@ -5409,6 +5711,7 @@ static int dm_update_crtc_state(struct amdgpu_display_manager *dm,
+ 	struct amdgpu_dm_connector *aconnector = NULL;
+ 	struct drm_connector_state *drm_new_conn_state = NULL, *drm_old_conn_state = NULL;
+ 	struct dm_connector_state *dm_new_conn_state = NULL, *dm_old_conn_state = NULL;
++	bool force_fixed_retry = false;
+ 
+ 	new_stream = NULL;
+ 
+@@ -5419,6 +5722,19 @@ static int dm_update_crtc_state(struct amdgpu_display_manager *dm,
+ 	if (connector)
+ 		aconnector = to_amdgpu_dm_connector(connector);
+ 
++#ifdef CONFIG_X86_PS5
++	if (connector && dm_ps5_is_hdmi_connector(connector)) {
++		const struct drm_connector_state *retry_state =
++			drm_atomic_get_new_connector_state(state, connector);
++
++		force_fixed_retry = retry_state &&
++			to_dm_connector_state(retry_state)->ps5_hdmi_recovery_commit &&
++			ps5_hdmi_vrr_failed();
++		if (force_fixed_retry)
++			new_crtc_state->mode_changed = true;
++	}
++#endif
++
+ 	/* TODO This hack should go away */
+ 	if (connector && enable) {
+ 		/* Make sure fake sink is created in plug-in scenario */
+@@ -5457,6 +5773,30 @@ static int dm_update_crtc_state(struct amdgpu_display_manager *dm,
  			goto fail;
  		}
  
@@ -3259,7 +3317,7 @@ index 47a0ff2ed035..f5734ab97115 100644
 +			dm_ps5_mode_from_timing(&new_stream->timing, &mode);
 +			/* Recovery must not trade HDR depth; user requests keep their own. */
 +			if (dm_new_conn_state->ps5_hdmi_recovery_commit &&
-+			    drm_new_conn_state->hdr_output_metadata &&
++			    dm_ps5_hdr_requested(drm_new_conn_state) &&
 +			    new_stream->timing.display_color_depth < COLOR_DEPTH_101010) {
 +				ret = -EINVAL;
 +				goto fail;
@@ -3278,8 +3336,41 @@ index 47a0ff2ed035..f5734ab97115 100644
  		/*
  		 * TODO: Check VSDB bits to decide whether this should
  		 * be enabled or not.
+@@ -5480,12 +5820,12 @@ static int dm_update_crtc_state(struct amdgpu_display_manager *dm,
+ 		 * TODO: Refactor this function to allow this check to work
+ 		 * in all conditions.
+ 		 */
+-		if (amdgpu_freesync_vid_mode &&
++		if (!force_fixed_retry && amdgpu_freesync_vid_mode &&
+ 		    dm_new_crtc_state->stream &&
+ 		    amdgpu_dm_is_timing_unchanged_for_freesync(new_crtc_state, old_crtc_state))
+ 			goto skip_modeset;
+ 
+-		if (dm_new_crtc_state->stream &&
++		if (!force_fixed_retry && dm_new_crtc_state->stream &&
+ 		    dc_is_stream_unchanged(new_stream, dm_old_crtc_state->stream) &&
+ 		    dc_is_stream_scaling_unchanged(new_stream, dm_old_crtc_state->stream)) {
+ 			new_crtc_state->mode_changed = false;
+@@ -5521,7 +5861,7 @@ static int dm_update_crtc_state(struct amdgpu_display_manager *dm,
+ 		}
+ 
+ 		/* Now check if we should set freesync video mode */
+-		if (amdgpu_freesync_vid_mode && dm_new_crtc_state->stream &&
++		if (!force_fixed_retry && amdgpu_freesync_vid_mode && dm_new_crtc_state->stream &&
+ 		    dc_is_stream_unchanged(new_stream, dm_old_crtc_state->stream) &&
+ 		    dc_is_stream_scaling_unchanged(new_stream, dm_old_crtc_state->stream) &&
+ 		    amdgpu_dm_is_timing_unchanged_for_freesync(new_crtc_state,
+@@ -5534,7 +5874,7 @@ static int dm_update_crtc_state(struct amdgpu_display_manager *dm,
+ 			amdgpu_dm_set_freesync_fixed_config(dm_new_crtc_state);
+ 
+ 			goto skip_modeset;
+-		} else if (amdgpu_freesync_vid_mode && aconnector &&
++		} else if (!force_fixed_retry && amdgpu_freesync_vid_mode && aconnector &&
+ 			   amdgpu_dm_is_freesync_video_mode(&new_crtc_state->mode,
+ 						  aconnector)) {
+ 			struct drm_display_mode *high_mode;
 diff --git a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_connector.c b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_connector.c
-index 45a69bf43971..cf1376b027ce 100644
+index 45a69bf43971..d6ff16f7c604 100644
 --- a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_connector.c
 +++ b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_connector.c
 @@ -78,6 +78,22 @@
@@ -3595,9 +3686,9 @@ index 45a69bf43971..cf1376b027ce 100644
  	}
  
 +#ifdef CONFIG_X86_PS5
-+	/* VERDE outputs 8 bpc only; a deeper DP input gives a black screen. */
-+	if (dm_ps5_is_hdmi_connector(connector) && !isHdmiDeepColorSupported())
-+		requested_bpc = requested_bpc ? min(requested_bpc, 8) : 8;
++	/* VERDE: a depth the HDMI side cannot carry gives a black screen. */
++	if (dm_ps5_is_hdmi_connector(connector))
++		requested_bpc = ps5_hdmi_bpc_limit(drm_mode, info, requested_bpc);
 +#endif
 +
  	/*
@@ -3736,7 +3827,7 @@ index 45a69bf43971..cf1376b027ce 100644
  	return 0;
  }
  
-@@ -3109,6 +3428,49 @@ STATIC_IFN_KUNIT void amdgpu_dm_connector_add_freesync_modes(struct drm_connecto
+@@ -3109,6 +3428,62 @@ STATIC_IFN_KUNIT void amdgpu_dm_connector_add_freesync_modes(struct drm_connecto
  }
  EXPORT_IF_KUNIT(amdgpu_dm_connector_add_freesync_modes);
  
@@ -3751,14 +3842,21 @@ index 45a69bf43971..cf1376b027ce 100644
 +	return a->clock > b->clock;
 +}
 +
-+/* Keep a stock mode preferred when one passes validation. */
++/* Prefer the largest stock mode that fits the EDID's native size. */
 +static void dm_ps5_set_preferred_mode(struct drm_connector *connector)
 +{
-+	struct drm_display_mode *mode, *best = NULL;
++	struct drm_display_mode *mode, *best = NULL, *fit = NULL, *native = NULL;
 +	bool preferred = false;
 +
 +	if (getHdmiExtendedModes() != 1)
 +		return;
++
++	list_for_each_entry(mode, &connector->probed_modes, head) {
++		if (mode->type & DRM_MODE_TYPE_PREFERRED) {
++			native = mode;
++			break;
++		}
++	}
 +
 +	list_for_each_entry(mode, &connector->probed_modes, head) {
 +		if (!isHdmiModeStock(mode) ||
@@ -3768,10 +3866,16 @@ index 45a69bf43971..cf1376b027ce 100644
 +			preferred = true;
 +		if (!best || dm_ps5_mode_larger(mode, best))
 +			best = mode;
++		if (native && mode->hdisplay <= native->hdisplay &&
++		    mode->vdisplay <= native->vdisplay &&
++		    (!fit || dm_ps5_mode_larger(mode, fit)))
++			fit = mode;
 +	}
 +
 +	if (!best)
 +		return;
++	if (fit)
++		best = fit;
 +
 +	list_for_each_entry(mode, &connector->probed_modes, head) {
 +		if (!isHdmiModeStock(mode))
@@ -3786,7 +3890,7 @@ index 45a69bf43971..cf1376b027ce 100644
  static int amdgpu_dm_connector_get_modes(struct drm_connector *connector)
  {
  	struct amdgpu_dm_connector *amdgpu_dm_connector =
-@@ -3143,6 +3505,10 @@ static int amdgpu_dm_connector_get_modes(struct drm_connector *connector)
+@@ -3143,6 +3518,10 @@ static int amdgpu_dm_connector_get_modes(struct drm_connector *connector)
  		if (encoder)
  			amdgpu_dm_connector_add_common_modes(encoder, connector);
  		amdgpu_dm_connector_add_freesync_modes(connector, drm_edid);
@@ -3797,7 +3901,7 @@ index 45a69bf43971..cf1376b027ce 100644
  	}
  	amdgpu_dm_fbc_init(connector);
  
-@@ -3299,6 +3665,12 @@ void amdgpu_dm_connector_init_helper(struct amdgpu_display_manager *dm,
+@@ -3299,6 +3678,12 @@ void amdgpu_dm_connector_init_helper(struct amdgpu_display_manager *dm,
  		/* Content Type is currently only implemented for HDMI. */
  		drm_connector_attach_content_type_property(&aconnector->base);
  	}
@@ -3810,7 +3914,7 @@ index 45a69bf43971..cf1376b027ce 100644
  
  	if (connector_type == DRM_MODE_CONNECTOR_HDMIA) {
  		if (!drm_mode_create_hdmi_colorspace_property(&aconnector->base, supported_colorspaces))
-@@ -3618,6 +3990,41 @@ void dm_restore_drm_connector_state(struct drm_device *dev,
+@@ -3618,6 +4003,41 @@ void dm_restore_drm_connector_state(struct drm_device *dev,
  		dm_force_atomic_commit(&aconnector->base);
  }
  
@@ -3852,6 +3956,99 @@ index 45a69bf43971..cf1376b027ce 100644
  static bool dm_edid_parser_send_cea(struct amdgpu_display_manager *dm,
  		unsigned int offset,
  		unsigned int total_length,
+@@ -3840,6 +4260,39 @@ STATIC_IFN_KUNIT int parse_hdmi_amd_vsdb(struct amdgpu_dm_connector *aconnector,
+ }
+ EXPORT_IF_KUNIT(parse_hdmi_amd_vsdb);
+ 
++#ifdef CONFIG_X86_PS5
++/* No DMUB EDID parser on PS5: read the FreeSync range from the AMD VSDB. */
++static void dm_ps5_parse_vrr_range(const struct edid *edid, unsigned int *amd_min,
++				   unsigned int *amd_max)
++{
++	const u8 *ext, *db;
++	int i, off, end, len;
++
++	*amd_min = *amd_max = 0;
++	if (!edid)
++		return;
++	for (i = 0; i < edid->extensions; i++) {
++		ext = (const u8 *)edid + EDID_LENGTH * (i + 1);
++		end = ext[2];
++		if (ext[0] != CEA_EXT || end < 4 || end > EDID_LENGTH - 1)
++			continue;
++		for (off = 4; off < end; off += 1 + len) {
++			db = ext + off;
++			len = db[0] & 0x1f;
++			if (off + 1 + len > end)
++				break;
++			if (db[0] >> 5 == 3 && len >= 7 &&
++			    db[1] == 0x1a && !db[2] && !db[3]) {
++				if ((db[5] & 0x01) && db[6] && db[7] > db[6]) {
++					*amd_min = db[6];
++					*amd_max = db[7];
++				}
++			}
++		}
++	}
++}
++#endif
++
+ /**
+  * amdgpu_dm_update_freesync_caps - Update Freesync capabilities
+  *
+@@ -3867,6 +4320,9 @@ void amdgpu_dm_update_freesync_caps(struct drm_connector *connector,
+ 	struct amdgpu_hdmi_vsdb_info vsdb_info = {0};
+ 	const struct edid *edid;
+ 	bool freesync_capable = false;
++#ifdef CONFIG_X86_PS5
++	unsigned int ps5_min_hz = 0, ps5_max_hz = 0;
++#endif
+ 	enum adaptive_sync_type as_type = ADAPTIVE_SYNC_TYPE_NONE;
+ 
+ 	if (!connector->state) {
+@@ -3963,6 +4419,30 @@ void amdgpu_dm_update_freesync_caps(struct drm_connector *connector,
+ 		}
+ 	}
+ 
++#ifdef CONFIG_X86_PS5
++	if (ps5_hdmi_vrr_enabled() && dm_ps5_is_hdmi_connector(connector)) {
++		struct drm_monitor_range_info *range = &connector->display_info.monitor_range;
++		unsigned int amd_min, amd_max;
++
++		dm_ps5_parse_vrr_range(edid, &amd_min, &amd_max);
++		ps5_min_hz = amd_min;
++		ps5_max_hz = amd_max;
++		/* Do not use an HDMI Forum-only range for the bridge. */
++		freesync_capable = amd_min && amd_max > amd_min + 10;
++		if (freesync_capable) {
++			amdgpu_dm_connector->min_vfreq = amd_min;
++			amdgpu_dm_connector->max_vfreq = amd_max;
++			range->min_vfreq = amdgpu_dm_connector->min_vfreq;
++			range->max_vfreq = amdgpu_dm_connector->max_vfreq;
++		} else {
++			amdgpu_dm_connector->min_vfreq = 0;
++			amdgpu_dm_connector->max_vfreq = 0;
++			range->min_vfreq = 0;
++			range->max_vfreq = 0;
++		}
++	}
++#endif
++
+ 	/* Handle MCCS */
+ 	if (do_mccs) {
+ 		dm_helpers_read_mccs_caps(adev->dm.dc->ctx, amdgpu_dm_connector->dc_link, sink);
+@@ -3975,6 +4455,11 @@ void amdgpu_dm_update_freesync_caps(struct drm_connector *connector,
+ 	}
+ 
+ update:
++#ifdef CONFIG_X86_PS5
++	if (ps5_hdmi_vrr_enabled() && dm_ps5_is_hdmi_connector(connector))
++		ps5_hdmi_vrr_set_caps(freesync_capable ? ps5_min_hz : 0,
++				      freesync_capable ? ps5_max_hz : 0);
++#endif
+ 	if (dm_con_state)
+ 		dm_con_state->freesync_capable = freesync_capable;
+ 
 diff --git a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.h b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.h
 index 881c8d1c3cc0..06ec0682fe02 100644
 --- a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.h
@@ -3947,6 +4144,95 @@ index 881c8d1c3cc0..06ec0682fe02 100644
  	enum amdgpu_rmx_type scaling;
  	uint8_t underscan_vborder;
  	uint8_t underscan_hborder;
+diff --git a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_freesync.c b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_freesync.c
+index 7e484adb4120..196a60bb48f8 100644
+--- a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_freesync.c
++++ b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_freesync.c
+@@ -37,6 +37,46 @@
+ #include "amdgpu_dm_freesync.h"
+ #include "dm_helpers.h"
+ #include "modules/inc/mod_freesync.h"
++#ifdef CONFIG_X86_PS5
++#include <linux/ps5.h>
++#include "ps5-hdmi-recovery.h"
++
++/* Sony's VRR timing SDP (39 04): the bridge needs it to follow VRR. */
++static void dm_ps5_set_vrr_sdp(struct dc_stream_state *stream)
++{
++	const struct dc_crtc_timing *t = &stream->timing;
++	struct dc_info_packet *p = &stream->adaptive_sync_infopacket;
++	u16 f[5];
++	int i;
++
++	f[0] = t->h_total;
++	f[1] = t->h_total - t->h_addressable - t->h_border_left - t->h_border_right -
++	       t->h_front_porch;
++	f[2] = t->h_sync_width;
++	f[3] = t->v_total - t->v_addressable - t->v_border_top - t->v_border_bottom -
++	       t->v_front_porch;
++	f[4] = t->v_sync_width;
++
++	memset(p, 0, sizeof(*p));
++	p->hb0 = 0x39;
++	p->hb1 = 0x04;
++	for (i = 0; i < 5; i++) {
++		p->sb[2 * i] = f[i] >> 8;
++		p->sb[2 * i + 1] = f[i] & 0xff;
++	}
++	p->sb[10] = 0x01;
++	if (t->h_addressable == 2560 && t->v_addressable == 1440) {
++		if (t->pix_clk_100hz >= 2414000 && t->pix_clk_100hz <= 2418000) {
++			p->sb[11] = t->v_front_porch + 1;
++			p->sb[13] = 60;
++		} else if (t->pix_clk_100hz >= 4972000 && t->pix_clk_100hz <= 4978000) {
++			p->sb[11] = t->v_front_porch + 2;
++			p->sb[13] = 120;
++		}
++	}
++	p->valid = true;
++}
++#endif
+ 
+ bool amdgpu_dm_is_dc_timing_adjust_needed(struct dm_crtc_state *old_state,
+ 					  struct dm_crtc_state *new_state)
+@@ -128,6 +168,25 @@ void amdgpu_dm_get_freesync_config_for_crtc(
+ 					vrefresh >= aconnector->min_vfreq &&
+ 					vrefresh <= aconnector->max_vfreq;
+ 
++#ifdef CONFIG_X86_PS5
++	if (new_crtc_state->vrr_supported && ps5_hdmi_vrr_enabled() &&
++	    dm_ps5_is_hdmi_connector(new_con_state->base.connector)) {
++		if (ps5_hdmi_vrr_allowed(&new_crtc_state->base.adjusted_mode))
++			dm_ps5_set_vrr_sdp(new_crtc_state->stream);
++		else
++			new_crtc_state->vrr_supported = false;
++	}
++#endif
++
++#ifdef CONFIG_X86_PS5
++	if (ps5_hdmi_vrr_enabled() && dm_ps5_is_hdmi_connector(new_con_state->base.connector) &&
++	    !new_crtc_state->vrr_supported) {
++		new_crtc_state->stream->ignore_msa_timing_param = false;
++		memset(&new_crtc_state->stream->adaptive_sync_infopacket, 0,
++		       sizeof(new_crtc_state->stream->adaptive_sync_infopacket));
++	}
++#endif
++
+ 	if (new_crtc_state->vrr_supported) {
+ 		new_crtc_state->stream->ignore_msa_timing_param = true;
+ 		fs_vid_mode = new_crtc_state->freesync_config.state == VRR_STATE_ACTIVE_FIXED;
+@@ -228,6 +287,11 @@ void amdgpu_dm_update_freesync_state_on_stream(
+ 		TRANSFER_FUNC_UNKNOWN,
+ 		&vrr_infopacket,
+ 		pack_sdp_v1_3);
++#ifdef CONFIG_X86_PS5
++	/* The bridge sends the sink's FreeSync SPD itself. */
++	if (ps5_hdmi_vrr_enabled() && aconn && dm_ps5_is_hdmi_connector(&aconn->base))
++		vrr_infopacket.valid = false;
++#endif
+ 
+ 	new_crtc_state->freesync_vrr_info_changed |=
+ 		(memcmp(&new_crtc_state->vrr_infopacket,
 diff --git a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_irq.c b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_irq.c
 index 74a8735168aa..1aa4e142f9b0 100644
 --- a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_irq.c
@@ -4659,6 +4945,34 @@ index 22ad6a743038..b0cac99ac034 100644
  	if (!link->link_enc->funcs->is_in_alt_mode)
  		return true;
  
+diff --git a/drivers/gpu/drm/amd/display/dc/link/link_dpms.c b/drivers/gpu/drm/amd/display/dc/link/link_dpms.c
+index 25ec3d38a14e..1ba725316cb6 100644
+--- a/drivers/gpu/drm/amd/display/dc/link/link_dpms.c
++++ b/drivers/gpu/drm/amd/display/dc/link/link_dpms.c
+@@ -59,6 +59,10 @@
+ #include "atomfirmware.h"
+ #include "vpg.h"
+ 
++#ifdef CONFIG_X86_PS5
++bool ps5_hdmi_vrr_enabled(void);
++#endif
++
+ #define DC_LOGGER \
+ 	dc_logger
+ #define DC_LOGGER_INIT(logger) \
+@@ -1017,6 +1021,12 @@ static void enable_stream_features(struct pipe_ctx *pipe_ctx)
+ 
+ 		new_downspread.bits.IGNORE_MSA_TIMING_PARAM =
+ 				(stream->ignore_msa_timing_param) ? 1 : 0;
++#ifdef CONFIG_X86_PS5
++		/* The PS5 HDMI bridge loses its input with this bit set. */
++		if (ps5_hdmi_vrr_enabled() && link->ep_type == DISPLAY_ENDPOINT_PHY &&
++		    !link->ps5_usbc)
++			new_downspread.bits.IGNORE_MSA_TIMING_PARAM = 0;
++#endif
+ 
+ 		if (new_downspread.raw != old_downspread.raw) {
+ 			core_link_write_dpcd(link, DP_DOWNSPREAD_CTRL,
 diff --git a/drivers/gpu/drm/amd/display/dc/link/link_factory.c b/drivers/gpu/drm/amd/display/dc/link/link_factory.c
 index 7146f8356233..b3a4656b604f 100644
 --- a/drivers/gpu/drm/amd/display/dc/link/link_factory.c
@@ -6673,12 +6987,13 @@ index 27008e2ea5af..06d4dc14a388 100644
  
 diff --git a/drivers/ps5/Makefile b/drivers/ps5/Makefile
 new file mode 100644
-index 000000000000..759960c8d76f
+index 000000000000..d19f87921278
 --- /dev/null
 +++ b/drivers/ps5/Makefile
-@@ -0,0 +1,3 @@
+@@ -0,0 +1,4 @@
 +obj-y += spcie.o tpcie.o hdmi.o mp1.o buzzer.o svm.o vmenter.o fan.o ps5-cec.o usbc_dp.o
 +obj-y += gpufreq.o
++obj-y += ps5_rtc.o
 +obj-y += led/
 diff --git a/drivers/ps5/autoservo_param.h b/drivers/ps5/autoservo_param.h
 new file mode 100644
@@ -10007,6 +10322,124 @@ index 000000000000..bce373429e1c
 +MODULE_LICENSE("GPL");
 +MODULE_DESCRIPTION("PS5 fan hwmon driver");
 +MODULE_ALIAS("platform:ps5-fan");
+diff --git a/drivers/ps5/frl-drop.inc b/drivers/ps5/frl-drop.inc
+new file mode 100644
+index 000000000000..73602117b1ca
+--- /dev/null
++++ b/drivers/ps5/frl-drop.inc
+@@ -0,0 +1,112 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Callers hold frl_state_lock. */
++struct frl_drop_state {
++	struct ps5_hdmi_plan last, pending, strike;
++	struct frl_failure_cache saved;
++	unsigned long started, retry_started;
++	u32 crc, pending_crc, strike_crc, generation;
++	u32 starts, last_count, strike_count;
++	bool last_valid, pending_valid, second, strike_valid, retry_valid;
++};
++
++static struct frl_drop_state frl_drop;
++
++static void frl_drop_reset(void)
++{
++	lockdep_assert_held(&frl_state_lock);
++	memset(&frl_drop, 0, sizeof(frl_drop));
++}
++
++static bool frl_drop_same_plan(const struct ps5_hdmi_plan *a,
++			       const struct ps5_hdmi_plan *b)
++{
++	return frl_recovery_same_mode(&a->mode, &b->mode) &&
++	       a->config.format == b->config.format && a->config.bpc == b->config.bpc &&
++	       a->config.limited == b->config.limited &&
++	       a->hdr == b->hdr && a->bt2020 == b->bt2020;
++}
++
++/* Repeated starts in one reconnect count once. */
++static u32 frl_drop_note_start(const struct ps5_hdmi_plan *plan, u32 crc,
++			       u32 generation, unsigned long started)
++{
++	u32 count;
++
++	lockdep_assert_held(&frl_state_lock);
++	if (frl_drop.strike_valid && frl_drop.retry_valid && frl_drop.last_count == frl_drop.starts &&
++	    frl_drop.last_count == frl_drop.strike_count + 1 &&
++	    frl_drop.generation == generation && frl_drop.crc == crc &&
++	    frl_drop.strike_crc == crc &&
++	    frl_drop_same_plan(plan, &frl_drop.last) &&
++	    frl_drop_same_plan(plan, &frl_drop.strike) &&
++	    jiffies_to_msecs(started - frl_drop.retry_started) <= READ_ONCE(frl_drop_ms))
++		frl_drop.strike_count = frl_drop.last_count;
++	frl_drop.last_valid = false;
++	count = ++frl_drop.starts;
++	if (frl_drop.strike_valid && !frl_drop.retry_valid &&
++	    count == frl_drop.strike_count + 1) {
++		frl_drop.retry_started = started;
++		frl_drop.retry_valid = true;
++	}
++	return count;
++}
++
++/* Called before unplug clears the failure cache. */
++static unsigned int frl_drop_note_unplug(unsigned int window, unsigned int *since)
++{
++	lockdep_assert_held(&frl_state_lock);
++	if (!window) {
++		frl_drop_reset();
++		return 0;
++	}
++	if (!frl_drop.last_valid) {
++		if (!frl_drop.pending_valid)
++			frl_drop.strike_valid = false;
++		return 0;
++	}
++	frl_drop.last_valid = false;
++	*since = jiffies_to_msecs(jiffies - frl_drop.started);
++	if (!frl_edid_valid || !READ_ONCE(frl_output_active) || *since > window) {
++		frl_drop.pending_valid = false;
++		frl_drop.strike_valid = false;
++		return 0;
++	}
++	frl_drop.pending = frl_drop.last;
++	frl_drop.pending_crc = frl_drop.crc;
++	frl_drop.saved = frl_failures;
++	frl_drop.pending_valid = true;
++	frl_drop.second = frl_drop.strike_valid &&
++		frl_drop.strike_crc == frl_drop.crc &&
++		frl_drop.last_count == frl_drop.strike_count + 1 &&
++		frl_drop_same_plan(&frl_drop.last, &frl_drop.strike);
++	if (!frl_drop.second) {
++		frl_drop.strike = frl_drop.last;
++		frl_drop.strike_crc = frl_drop.crc;
++		frl_drop.strike_count = frl_drop.last_count;
++		frl_drop.strike_valid = true;
++		frl_drop.retry_valid = false;
++	}
++	return frl_drop.second ? 2 : 1;
++}
++
++/* Only when the same EDID returns. */
++static bool frl_drop_note_edid(bool valid, u32 crc)
++{
++	lockdep_assert_held(&frl_state_lock);
++	if (!READ_ONCE(frl_drop_ms) || !valid ||
++	    (frl_drop.pending_valid && crc != frl_drop.pending_crc) ||
++	    (frl_drop.strike_valid && crc != frl_drop.strike_crc)) {
++		frl_drop_reset();
++		return false;
++	}
++	if (!frl_drop.pending_valid)
++		return false;
++	frl_drop.pending_valid = false;
++	frl_failures = frl_drop.saved;
++	if (!frl_drop.second)
++		return false;
++	frl_drop.strike_valid = false;
++	if (!READ_ONCE(frl_recovery) || !frl_failure_add(&frl_failures, &frl_drop.pending))
++		frl_failed = true;
++	return true;
++}
 diff --git a/drivers/ps5/gpufreq.c b/drivers/ps5/gpufreq.c
 new file mode 100644
 index 000000000000..80953514df04
@@ -10323,10 +10756,10 @@ index 000000000000..80953514df04
 +EXPORT_SYMBOL(ps5_gpufreq_register);
 diff --git a/drivers/ps5/hdmi.c b/drivers/ps5/hdmi.c
 new file mode 100755
-index 000000000000..3b2fe47c74a2
+index 000000000000..eafc17bb3463
 --- /dev/null
 +++ b/drivers/ps5/hdmi.c
-@@ -0,0 +1,2458 @@
+@@ -0,0 +1,3044 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +
 +#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -10354,6 +10787,10 @@ index 000000000000..3b2fe47c74a2
 +module_param(extended_modes, int, 0444);
 +MODULE_PARM_DESC(extended_modes, "Extended modes (0 = disabled, 1 = enabled (default), 2 = enabled and preferred)");
 +
++static bool extended_tmds;
++module_param(extended_tmds, bool, 0444);
++MODULE_PARM_DESC(extended_tmds, "Offer manual TMDS timings above 297 MHz outside 1440p, e.g. 1080p144-180 (untested, default off)");
++
 +static bool frl_4k120 = true;
 +module_param(frl_4k120, bool, 0644);
 +MODULE_PARM_DESC(frl_4k120, "Native FRL on FLAVA3, including 4K100/120 (default on; 0 = disable)");
@@ -10362,9 +10799,21 @@ index 000000000000..3b2fe47c74a2
 +module_param(frl_yuv420, uint, 0644);
 +MODULE_PARM_DESC(frl_yuv420, "Native FRL 4:2:0: 0 = disabled, 1 = fallback (default), 2 = prefer when the mode permits it");
 +
++static unsigned int frl_drop_ms;
++module_param(frl_drop_ms, uint, 0644);
++MODULE_PARM_DESC(frl_drop_ms, "Reject a native FRL plan after two consecutive early display drops (0 = off)");
++
 +static bool frl_recovery = true;
 +module_param(frl_recovery, bool, 0644);
 +MODULE_PARM_DESC(frl_recovery, "Bounded HDMI recovery after a native FRL failure (default on; 0 = disable candidate retries)");
++
++static unsigned int vrr;
++static u16 vrr_range;
++static bool vrr_failed;
++static unsigned int vrr_failed_generation;
++static bool vrr_setup_pending;
++module_param(vrr, uint, 0444);
++MODULE_PARM_DESC(vrr, "FreeSync VRR on FLAVA3: 0 = off (default), 1 = on");
 +
 +/* ALLM policy; the "allm" parameter is defined with its setter below. */
 +static unsigned int allm = 1;
@@ -10376,6 +10825,26 @@ index 000000000000..3b2fe47c74a2
 +static unsigned int allm_avi = 1;
 +module_param(allm_avi, uint, 0644);
 +MODULE_PARM_DESC(allm_avi, "TMDS AVI content from the next modeset: 0 = IT content Game, 1 = clear IT content/type while ALLM is enabled (default), 2 = always clear IT content/type");
++
++/*
++ * VERDE: AVI, HDR and RGB range InfoFrames written the way the PS5 OS writes
++ * them. Off by default; read at each modeset.
++ */
++static bool verde_infoframes;
++module_param(verde_infoframes, bool, 0644);
++MODULE_PARM_DESC(verde_infoframes, "VERDE: send AVI, HDR (DRM) and RGB range InfoFrames from the next modeset (default off)");
++static bool verde_deep_colour;
++module_param(verde_deep_colour, bool, 0444);
++MODULE_PARM_DESC(verde_deep_colour, "VERDE: 10 and 12 bpc where the TMDS clock allows (default off)");
++static bool verde_frl;
++module_param(verde_frl, bool, 0444);
++MODULE_PARM_DESC(verde_frl, "VERDE: FRL for 4K100/120 and 4K60 deep colour, and 4:2:2 output (default off)");
++static bool verde_vrr;
++module_param(verde_vrr, bool, 0444);
++MODULE_PARM_DESC(verde_vrr, "VERDE: HDMI VRR for sinks with HDMI VRR and a FreeSync range (default off)");
++static bool verde_allm;
++module_param(verde_allm, bool, 0444);
++MODULE_PARM_DESC(verde_allm, "VERDE: ALLM, following the allm parameter (default off)");
 +
 +struct icc_i2c_msg {
 +	u8 code;
@@ -10500,6 +10969,7 @@ index 000000000000..3b2fe47c74a2
 +static bool sink_cta_422;
 +static bool sink_cta_444;
 +static u8 sink_y420_modes[256];
++static bool sink_hf_vrr;
 +static bool sink_allm;
 +module_param_named(allm_sink, sink_allm, bool, 0444);
 +MODULE_PARM_DESC(allm_sink, "Y if the sink advertises ALLM in its HF-VSDB or HF-SCDB (read only)");
@@ -10529,6 +10999,8 @@ index 000000000000..3b2fe47c74a2
 +#include "frl-recovery.inc"
 +
 +static struct frl_failure_cache frl_failures;
++
++#include "frl-drop.inc"
 +
 +static bool frl_sink_failed(void)
 +{
@@ -10631,6 +11103,18 @@ index 000000000000..3b2fe47c74a2
 +	mutex_unlock(&frl_state_lock);
 +}
 +
++/* A VRR setup failure keeps the fixed candidate. */
++static void frl_finish_failure(const struct ps5_hdmi_plan *plan,
++			       struct ps5_hdmi_setup_result *result, int cleanup)
++{
++	if (cleanup) {
++		result->retry_fixed = false;
++		pr_warn("output cleanup failed: %d; fixed retry withheld\n", cleanup);
++	}
++	if (plan && plan->generation == frl_get_sink_generation() && !result->retry_fixed)
++		frl_record_failure(plan, cleanup != 0);
++}
++
 +bool ps5_hdmi_recovery_enabled(void)
 +{
 +	return READ_ONCE(frl_recovery);
@@ -10653,6 +11137,7 @@ index 000000000000..3b2fe47c74a2
 +		mutex_lock(&frl_state_lock);
 +		frl_failed = false;
 +		memset(&frl_failures, 0, sizeof(frl_failures));
++		frl_drop_reset();
 +		mutex_unlock(&frl_state_lock);
 +	}
 +	WRITE_ONCE(frl_decision_logged, -1);
@@ -11151,7 +11636,7 @@ index 000000000000..3b2fe47c74a2
 +{
 +	i2c_init(0);
 +	i2c_begin_block();
-+	i2c_write(0x705f, 0x12);
++	i2c_write(0x705f, READ_ONCE(vrr_setup_pending) ? 0x92 : 0x12);
 +	i2c_write(0x6004, 0x80);
 +	i2c_write(0x6020, 0x00);
 +	i2c_write(0x7007, 0xff);
@@ -11218,6 +11703,181 @@ index 000000000000..3b2fe47c74a2
 +	i2c_write_data(0x7214, (u8[]){0x00, 0x00}, 2);
 +	i2c_end_block();
 +	return i2c_exec();
++}
++
++bool ps5_hdmi_vrr_failed(void)
++{
++	bool failed;
++
++	mutex_lock(&frl_state_lock);
++	failed = vrr_failed && vrr_failed_generation == frl_sink_generation;
++	mutex_unlock(&frl_state_lock);
++	return failed;
++}
++EXPORT_SYMBOL(ps5_hdmi_vrr_failed);
++
++static bool vrr_fail_generation(unsigned int generation)
++{
++	bool same_generation;
++
++	mutex_lock(&frl_state_lock);
++	same_generation = generation == frl_sink_generation;
++	if (same_generation) {
++		if (!vrr_failed || vrr_failed_generation != generation)
++			pr_warn("FreeSync failed; retrying this sink at fixed refresh\n");
++		vrr_failed = true;
++		vrr_failed_generation = generation;
++	}
++	mutex_unlock(&frl_state_lock);
++	return same_generation;
++}
++
++bool ps5_hdmi_vrr_enabled(void)
++{
++	if (hdmi_ic_type == HDMI_IC_TYPE_VERDE)
++		return READ_ONCE(verde_vrr);
++	return vrr && hdmi_ic_type == HDMI_IC_TYPE_FLAVA3;
++}
++EXPORT_SYMBOL(ps5_hdmi_vrr_enabled);
++
++/* One value, so readers never mix two EDIDs. */
++void ps5_hdmi_vrr_set_caps(unsigned int min_hz, unsigned int max_hz)
++{
++	u16 range = 0;
++
++	if (min_hz && min_hz < max_hz && max_hz <= 255)
++		range = min_hz | max_hz << 8;
++	WRITE_ONCE(vrr_range, range);
++}
++EXPORT_SYMBOL(ps5_hdmi_vrr_set_caps);
++
++/* Sony's 1440p SDP fields exist for these modes only. */
++static bool vrr_mode_ok(const struct drm_display_mode *mode)
++{
++	u8 vic;
++
++	if (!mode || mode->flags & (DRM_MODE_FLAG_INTERLACE | DRM_MODE_FLAG_DBLSCAN |
++				    DRM_MODE_FLAG_3D_MASK) ||
++	    mode->vscan > 1)
++		return false;
++	vic = drm_match_cea_mode(mode);
++	if (vic == 16 || vic == 63 || vic == 97 || vic == 117 || vic == 118)
++		return true;
++	if (mode->hdisplay != 2560 || mode->hsync_start != 2608 ||
++	    mode->hsync_end != 2640 || mode->htotal != 2720 ||
++	    mode->vdisplay != 1440 || mode->vsync_start != 1443 ||
++	    mode->vsync_end != 1448 ||
++	    mode->flags != (DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_NVSYNC))
++		return false;
++	return (mode->vtotal == 1481 && (mode->clock == 241500 || mode->clock == 241700)) ||
++	       (mode->vtotal == 1525 && (mode->clock == 497500 || mode->clock == 497750));
++}
++
++bool ps5_hdmi_vrr_allowed(const struct drm_display_mode *mode)
++{
++	u16 range = READ_ONCE(vrr_range);
++	unsigned int refresh;
++
++	if (!ps5_hdmi_vrr_enabled() || !range || !vrr_mode_ok(mode) || ps5_hdmi_vrr_failed())
++		return false;
++	if (hdmi_ic_type == HDMI_IC_TYPE_VERDE && !READ_ONCE(sink_hf_vrr))
++		return false;
++	refresh = drm_mode_vrefresh(mode);
++	return refresh >= (range & 0xff) && refresh <= (range >> 8);
++}
++EXPORT_SYMBOL(ps5_hdmi_vrr_allowed);
++
++static void vrr_queue_follow(const struct drm_display_mode *mode)
++{
++	i2c_write(0x6064, 0x03);
++	i2c_write(0x1047, 0x30);
++	i2c_write_data(0x600c, (u8[]){0x01, 0x00}, 2);
++	/* Per-resolution value, as the PS5 OS sets it. */
++	if (mode->vdisplay == 2160)
++		i2c_write_data(0x6224, (u8[]){0x40, 0x0f}, 2);
++	else if (mode->vdisplay == 1440)
++		i2c_write_data(0x6224, (u8[]){0x90, 0x09}, 2);
++	else if (mode->vdisplay == 1080)
++		i2c_write_data(0x6224, (u8[]){0xbc, 0x07}, 2);
++	else
++		i2c_write_data(0x6224, (u8[]){0x00, 0x01}, 2);
++	i2c_write(0x6c07, 0x80);
++}
++
++/* AMD FreeSync SPD: supported, enabled and active. */
++static void vrr_queue_freesync(unsigned int refresh)
++{
++	u8 spd[30] = { 0x83, 0x01, 0x08, 0x00, 0x1a, 0x00, 0x00, 0x00, 0x00, 0x07,
++		       READ_ONCE(vrr_range) & 0xff, refresh };
++	u8 sum = 0;
++	int i;
++
++	for (i = 0; i < 12; i++)
++		sum += spd[i];
++	spd[3] = -sum;
++	i2c_write_data(0x7240, spd, sizeof(spd));
++	i2c_mask(0x7203, 0x20, 0x20);
++	i2c_write(0x7204, 0x20);
++	i2c_waitclear(0x7204, 0x20);
++}
++
++/*
++ * Set up bridge follow mode and metadata while video is muted.
++ * Caller holds frl_setup_lock; on failure video stays muted.
++ */
++static int vrr_output_started(const struct drm_display_mode *mode, bool source_vrr,
++			      unsigned int generation,
++			      struct ps5_hdmi_setup_result *result)
++{
++	unsigned int refresh;
++	int ret;
++
++	lockdep_assert_held(&frl_setup_lock);
++	if (generation != frl_get_sink_generation())
++		return -ENODEV;
++	if (!ps5_hdmi_vrr_enabled()) {
++		WRITE_ONCE(vrr_setup_pending, false);
++		return 0;
++	}
++	if (!ps5_hdmi_vrr_allowed(mode)) {
++		/* A queued commit may already use a variable stream. */
++		if (source_vrr) {
++			ret = -EAGAIN;
++			goto fail;
++		}
++		WRITE_ONCE(vrr_setup_pending, false);
++		return 0;
++	}
++	refresh = min(drm_mode_vrefresh(mode), 255);
++	if (generation != frl_get_sink_generation())
++		return -ENODEV;
++	i2c_init(1);
++	i2c_begin_block();
++	vrr_queue_follow(mode);
++	i2c_end_block();
++	ret = i2c_exec();
++	if (ret)
++		goto fail;
++	if (generation != frl_get_sink_generation())
++		return -ENODEV;
++	i2c_init(1);
++	vrr_queue_freesync(refresh);
++	ret = i2c_exec();
++	if (ret)
++		goto fail;
++	if (generation != frl_get_sink_generation())
++		return -ENODEV;
++	WRITE_ONCE(vrr_setup_pending, false);
++	pr_info("FreeSync configured before unmute, %u lines, up to %u Hz\n",
++		mode->vdisplay, refresh);
++	return 0;
++fail:
++	pr_warn("VRR preparation failed: %d; keeping video muted\n", ret);
++	if (!vrr_fail_generation(generation))
++		return -ENODEV;
++	result->generation = generation;
++	result->retry_fixed = true;
++	return ret;
 +}
 +
 +static int configParamFlava3Pre(void)
@@ -11377,7 +12037,9 @@ index 000000000000..3b2fe47c74a2
 +{
 +	unsigned int policy = READ_ONCE(allm);
 +
-+	return hdmi_ic_type == HDMI_IC_TYPE_FLAVA3 && READ_ONCE(frl_edid_valid) &&
++	return (hdmi_ic_type == HDMI_IC_TYPE_FLAVA3 ||
++		(hdmi_ic_type == HDMI_IC_TYPE_VERDE && READ_ONCE(verde_allm))) &&
++	       READ_ONCE(frl_edid_valid) &&
 +	       READ_ONCE(sink_allm) &&
 +	       (policy == 2 || (policy == 1 && READ_ONCE(allm_game)));
 +}
@@ -11445,7 +12107,9 @@ index 000000000000..3b2fe47c74a2
 +	if (mode->hdisplay == 2560 && mode->vdisplay == 1440)
 +		return mode->clock > 340000;
 +
-+	return mode->clock <= 297000 && !drm_match_cea_mode(mode);
++	/* Above 297 MHz is untested outside 1440p: opt-in only. */
++	return (mode->clock <= 297000 || READ_ONCE(extended_tmds)) &&
++	       !drm_match_cea_mode(mode);
 +}
 +
 +static void setManualTimingFlava3(const struct drm_display_mode *mode)
@@ -11502,7 +12166,7 @@ index 000000000000..3b2fe47c74a2
 +		/* Set manual timing */
 +		i2c_write_data(0x7227, (u8[]){0x05, 0x00}, 2);
 +		i2c_write_data(0x7070, (u8[]){0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, 6);
-+	} else if (vic == 16 || vic == 63) {
++	} else if (vic == 16 || vic == 63 || vic == 64) {
 +		/* Set VIC and content type */
 +		i2c_write_data(0x7227, (u8[]){vic, 0x00}, 2);
 +		i2c_write_data(0x7070, (u8[]){vic, vic, 0x00, 0x00, 0x00, 0x00}, 6);
@@ -11667,14 +12331,20 @@ index 000000000000..3b2fe47c74a2
 +}
 +
 +static int setHdmiVideoConfigFlava3(const struct drm_display_mode *mode,
-+				    unsigned int bpc, bool yuv422)
++				    unsigned int bpc, bool yuv422, bool source_vrr,
++				    unsigned int generation,
++				    struct ps5_hdmi_setup_result *result)
 +{
-+	unsigned int generation;
 +	bool allm;
 +	int ret, packet_ret;
 +
 +	mutex_lock(&frl_setup_lock);
-+	generation = frl_get_sink_generation();
++	if (generation != frl_get_sink_generation()) {
++		mutex_unlock(&frl_setup_lock);
++		return -ENODEV;
++	}
++	WRITE_ONCE(vrr_setup_pending, ps5_hdmi_vrr_enabled() &&
++		   (source_vrr || ps5_hdmi_vrr_allowed(mode)));
 +	allm = allm_wanted();
 +	allm_reset();
 +	ret = configParamFlava3Pre();
@@ -11700,9 +12370,14 @@ index 000000000000..3b2fe47c74a2
 +		ret = -ENODEV;
 +	if (packet_ret)
 +		pr_warn("ALLM setup failed: %d\n", packet_ret);
++	if (!ret)
++		ret = vrr_output_started(mode, source_vrr, generation, result);
 +out:
-+	if (ret)
++	if (ret) {
 +		allm_reset();
++		if (result->retry_fixed)
++			frl_finish_failure(NULL, result, frl_cleanup());
++	}
 +	mutex_unlock(&frl_setup_lock);
 +	return ret;
 +}
@@ -11823,12 +12498,25 @@ index 000000000000..3b2fe47c74a2
 +	setAudioConfigAdditional(channels);
 +}
 +
-+static void initVerde(void)
++/* Status bits 4 and 6 of 0x00f3 each ask for a reset, as the PS5 OS does it. */
++static void initVerdeStatus(u8 status)
 +{
 +	i2c_init(0);
 +	i2c_mask(0x105, 0x00, 0x03);
 +	i2c_mask(0x104, 0x00, 0x02);
 +	i2c_cmd_2_1(0x400, 0x00);
++	if (status & 0x10) {
++		i2c_cmd_2_1(0xf1, 0x10);
++		i2c_waitset(0xf2, 0x10);
++		i2c_waitset(0x16, 0x08);
++		i2c_cmd_2_1(0x16, 0x08);
++	}
++	if (status & 0x40) {
++		i2c_cmd_2_1(0xf1, 0x40);
++		i2c_waitset(0xf2, 0x40);
++		i2c_waitset(0x16, 0x08);
++		i2c_cmd_2_1(0x16, 0x08);
++	}
 +	i2c_cmd_2_1(0x3261, 0x02);
 +	i2c_begin_block();
 +	i2c_write(0x11, 0x03);
@@ -11839,6 +12527,11 @@ index 000000000000..3b2fe47c74a2
 +	i2c_end_block();
 +	i2c_cmd_5_3(0x00);
 +	i2c_exec();
++}
++
++static void initVerde(void)
++{
++	initVerdeStatus(0);
 +}
 +
 +static void linkConfigVerde(const struct drm_display_mode *mode)
@@ -11855,19 +12548,20 @@ index 000000000000..3b2fe47c74a2
 +	i2c_exec();
 +}
 +
-+static void configDpLinkTrainingVerde(void)
++/* VRR sets bit 7 of 0x8003 for the DP input. */
++static int configDpLinkTrainingVerde(bool vrr)
 +{
 +	i2c_init(0);
 +	i2c_cmd_2_1(0x9002, 0x01);
++	if (vrr)
++		i2c_write_data(0x8000, (u8[]){0x00, 0x01, 0x07, 0x80}, 4);
 +	i2c_waitset(0x4001, 0x02);
 +	i2c_cmd_2_1(0x11, 0x01);
-+	i2c_exec();
++	return i2c_exec();
 +}
 +
-+static void setTmdsConfigVerde(void)
++static void queueVerdeAudio(void)
 +{
-+	i2c_init(0);
-+	i2c_cmd_2_1(0x9200, 0x00);
 +	i2c_begin_block();
 +	i2c_write(0x9800, 0x00);
 +	i2c_write(0x33b3, 0x1a);
@@ -11879,6 +12573,13 @@ index 000000000000..3b2fe47c74a2
 +	i2c_waitclear(0x9830, 0x80);
 +	i2c_cmd_2_1(0x9830, 0x81);
 +	i2c_waitclear(0x9830, 0x80);
++}
++
++static void setTmdsConfigVerde(bool vrr)
++{
++	i2c_init(0);
++	i2c_cmd_2_1(0x9200, vrr);
++	queueVerdeAudio();
 +	i2c_waitclear(0x108, 0x10);
 +	i2c_mask(0x108, 0x11, 0x17);
 +	i2c_waitset(0x13, 0x40);
@@ -11888,25 +12589,199 @@ index 000000000000..3b2fe47c74a2
 +	i2c_exec();
 +}
 +
-+static void setHdmiBasicVideoConfigVerde(const struct drm_display_mode *mode)
++/*
++ * verde_infoframes state: what amdgpu asked for since the last video setup,
++ * and what was written. valid is false when that setup wrote no AVI.
++ */
++static DEFINE_MUTEX(verde_if_lock);
++static struct {
++	bool valid;
++	u8 vic;
++	u8 format;
++	bool limited;
++	bool bt2020;
++	bool hdr;
++	struct hdmi_drm_infoframe frame;
++	u8 avi[18];
++	bool drm_sent;
++	u8 drm[HDMI_INFOFRAME_SIZE(DRM)];
++} verde_if;
++
++/*
++ * The AVI InfoFrame at 0x3058 without its type byte: version, length,
++ * checksum, PB1-PB13 and two zero bytes, as in the PS5 OS captures.
++ */
++static void verde_avi(u8 avi[18], u8 vic, u8 format, bool bt2020, bool limited)
++{
++	bool rgb = format == PS5_HDMI_RGB;
++	u8 sum = HDMI_INFOFRAME_TYPE_AVI;
++	unsigned int i;
++
++	memset(avi, 0, 18);
++	avi[0] = 0x02;
++	avi[1] = HDMI_AVI_INFOFRAME_SIZE;
++	avi[3] = format == PS5_HDMI_422 ? 0x20 : format == PS5_HDMI_444 ? 0x40 : 0x00;
++	avi[4] = bt2020 ? 0xe8 : 0x28;
++	avi[5] = (bt2020 ? 0x60 : 0x00) | (rgb ? (limited ? 0x04 : 0x08) : 0x00);
++	avi[6] = vic;
++	avi[7] = limited ? 0x00 : 0x40;
++	for (i = 0; i < 3 + HDMI_AVI_INFOFRAME_SIZE; i++)
++		sum += avi[i];
++	avi[2] = -sum;
++}
++
++/* Packet enables at 0x3000: ALLM (HF-VSIF), DRM and 8 bpc. */
++static void verde_packets(u8 out[10], bool allm, bool drm, bool deep)
++{
++	static const u8 base[10] = { 0x56, 0xaa, 0x00, 0x24, 0x00, 0xa8, 0x00, 0x00, 0x08, 0x80 };
++
++	memcpy(out, base, sizeof(base));
++	if (allm) {
++		out[1] = (out[1] & ~0x30) | 0x10;
++		out[6] |= 0x20;
++	}
++	if (drm) {
++		out[1] = (out[1] & ~0xc0) | 0x40;
++		out[6] |= 0x80;
++	}
++	if (deep)
++		out[9] = 0x00;
++}
++
++/* 0x3033 byte 3 is the RGB/4:4:4 depth, byte 4 is set over FRL. */
++static void verde_depth(u8 out[9], unsigned int bpc, u8 format, bool frl)
++{
++	memset(out, 0, 9);
++	if (format == PS5_HDMI_422 || bpc <= 8)
++		return;
++	out[3] = bpc >= 12 ? 0x06 : 0x05;
++	out[4] = frl;
++}
++
++/*
++ * Rewrite the AVI and DRM InfoFrames on a running output when they change,
++ * in the order the PS5 OS uses for its VERDE audio InfoFrame update: blocks,
++ * the enable bits in 0x3000, the trigger 0x300a and the done flag in 0x0013.
++ */
++static void verde_if_update(void)
++{
++	const struct hdmi_drm_infoframe *frame = NULL;
++	struct hdmi_drm_infoframe sdr;
++	u8 drm[HDMI_INFOFRAME_SIZE(DRM)];
++	bool send_drm;
++	u8 avi[18];
++	int ret;
++
++	lockdep_assert_held(&verde_if_lock);
++	if (!verde_if.valid)
++		return;
++	/* Sinks keep the last DRM InfoFrame: send EOTF 0 when leaving HDR. */
++	if (verde_if.hdr) {
++		frame = &verde_if.frame;
++	} else if (verde_if.drm_sent) {
++		hdmi_drm_infoframe_init(&sdr);
++		frame = &sdr;
++	}
++	send_drm = frame && hdmi_drm_infoframe_pack_only(frame, drm, sizeof(drm)) == sizeof(drm);
++	if (frame && !send_drm)
++		return;
++	verde_avi(avi, verde_if.vic, verde_if.format, verde_if.bt2020, verde_if.limited);
++	if (!memcmp(avi, verde_if.avi, sizeof(avi)) && send_drm == verde_if.drm_sent &&
++	    (!send_drm || !memcmp(drm, verde_if.drm, sizeof(drm))))
++		return;
++
++	i2c_init(2);
++	i2c_begin_block();
++	i2c_write_data(0x3058, avi, sizeof(avi));
++	if (send_drm)
++		i2c_write_data(0x3102, drm + 1, sizeof(drm) - 1);
++	i2c_end_block();
++	i2c_mask(0x3001, send_drm ? 0x40 : 0x80, 0xc0);
++	i2c_mask(0x3006, send_drm ? 0x80 : 0x00, 0xc0);
++	i2c_cmd_2_1(0x300a, 0x01);
++	i2c_waitset(0x13, 0x80);
++	i2c_cmd_2_1(0x13, 0x80);
++	ret = i2c_exec();
++
++	memcpy(verde_if.avi, avi, sizeof(avi));
++	verde_if.drm_sent = send_drm;
++	if (send_drm)
++		memcpy(verde_if.drm, drm, sizeof(drm));
++	pr_info("verde: InfoFrames vic %u, %s range, %s, DRM %s (%d)\n", verde_if.vic,
++		verde_if.limited ? "limited" : "full",
++		verde_if.bt2020 ? "BT.2020" : "default colorimetry",
++		!send_drm ? "off" : verde_if.hdr ? "HDR" : "EOTF 0", ret);
++}
++
++static const u8 verde_spd[28] = {
++	0x01, 0x19, 0x5f, 0x53, 0x43, 0x45, 0x49, 0x00, 0x00, 0x00, 0x00, 0x50, 0x53, 0x35,
++	[27] = 0x08,
++};
++
++/* HF-VSIF with ALLM_Mode set, version, length and checksum first. */
++static const u8 verde_hf_vsif[8] = { 0x01, 0x05, 0x7d, 0xd8, 0x5d, 0xc4, 0x01, 0x02 };
++
++static void queueVerdeVrr(unsigned int refresh, bool frl)
++{
++	i2c_write(0x326a, 0x84);
++	if (frl)
++		i2c_write_data(0x3271, (u8[]){0x01, 0x00, 0x00, 0x00}, 4);
++	else
++		i2c_write_data(0x3271, (u8[]){0x01, 0x03, 0x00, refresh}, 4);
++}
++
++static bool verde_deep(unsigned int bpc, u8 format)
++{
++	return READ_ONCE(verde_deep_colour) && format != PS5_HDMI_422 && bpc > 8;
++}
++
++static void setHdmiBasicVideoConfigVerde(const struct drm_display_mode *mode, unsigned int bpc,
++					 u8 format, bool vrr, bool allm)
 +{
 +	u8 vic = drm_match_cea_mode(mode);
++	bool infoframes = READ_ONCE(verde_infoframes) || format != PS5_HDMI_RGB;
++	bool deep = verde_deep(bpc, format);
++	u8 avi[18], packets[10], depth[9];
++
++	verde_avi(avi, vic, format, false, false);
++	verde_packets(packets, allm, false, deep);
++	verde_depth(depth, deep ? bpc : 8, format, false);
++	mutex_lock(&verde_if_lock);
++	verde_if.valid = infoframes;
++	verde_if.vic = vic;
++	verde_if.format = format;
++	verde_if.limited = false;
++	verde_if.bt2020 = false;
++	verde_if.hdr = false;
++	memcpy(verde_if.avi, avi, sizeof(avi));
++	verde_if.drm_sent = false;
++	mutex_unlock(&verde_if_lock);
 +
 +	i2c_init(0);
 +	i2c_begin_block();
-+	if (vic == 16) {
++	if (infoframes) {
++		i2c_write_data(0x3058, avi, sizeof(avi));
++	} else if (vic == 16) {
 +		i2c_write_data(0x3058, (u8[]){0x02, 0x0d, 0xef, 0x00, 0x28, 0x08, 0x10, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, 18);
 +	} else if (mode->hdisplay == 2560 && mode->vdisplay == 1440) {
 +		i2c_write_data(0x3058, (u8[]){0x02, 0x0d, 0xff, 0x00, 0x28, 0x08, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, 18);
 +	} else if (vic == 97) {
 +		i2c_write_data(0x3058, (u8[]){0x02, 0x0d, 0x9e, 0x00, 0x28, 0x08, 0x61, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, 18);
 +	}
-+	i2c_write_data(0x31d0, (u8[]){0x01, 0x19, 0x5f, 0x53, 0x43, 0x45, 0x49, 0x00, 0x00, 0x00, 0x00, 0x50, 0x53, 0x35, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08}, 28);
++	i2c_write_data(0x31d0, (u8 *)verde_spd, sizeof(verde_spd));
 +	i2c_end_block();
 +	i2c_begin_block();
-+	i2c_write_data(0x3033, (u8[]){0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, 9);
++	if (allm)
++		i2c_write_data(0x30e0, (u8 *)verde_hf_vsif, sizeof(verde_hf_vsif));
++	i2c_write_data(0x3033, depth, sizeof(depth));
 +	i2c_write_data(0x307a, (u8[]){0x01, 0x0a, 0x70, 0x01, 0x00, 0x00, 0x00, 0x00}, 8);
-+	i2c_write_data(0x3000, (u8[]){0x56, 0xaa, 0x00, 0x24, 0x00, 0xa8, 0x00, 0x00, 0x08, 0x80}, 10);
++	if (vrr)
++		queueVerdeVrr(min(drm_mode_vrefresh(mode), 255), false);
++	i2c_write_data(0x3000, packets, sizeof(packets));
++	if (vrr) {
++		i2c_write(0x3261, 0x01);
++		i2c_write(0x3262, 0x02);
++	}
 +	i2c_end_block();
 +	i2c_cmd_2_1(0x300a, 0x01);
 +	i2c_waitclear(0x300c, 0xf3);
@@ -11923,12 +12798,51 @@ index 000000000000..3b2fe47c74a2
 +	i2c_exec();
 +}
 +
-+static void setHdmiVideoConfigVerde(const struct drm_display_mode *mode)
++static int setHdmiVideoConfigVerde(const struct drm_display_mode *mode, unsigned int bpc,
++				   bool yuv422, bool source_vrr, unsigned int generation,
++				   struct ps5_hdmi_setup_result *result)
 +{
++	u8 format = yuv422 && READ_ONCE(verde_frl) ? PS5_HDMI_422 : PS5_HDMI_RGB;
++	bool vrr, allm;
++
++	mutex_lock(&frl_setup_lock);
++	vrr = ps5_hdmi_vrr_allowed(mode);
++	if (source_vrr && !vrr) {
++		WRITE_ONCE(vrr_setup_pending, false);
++		mutex_unlock(&frl_setup_lock);
++		if (!vrr_fail_generation(generation))
++			return -ENODEV;
++		result->generation = generation;
++		result->retry_fixed = true;
++		return -EAGAIN;
++	}
++	allm = allm_wanted();
 +	linkConfigVerde(mode);
-+	configDpLinkTrainingVerde();
-+	setTmdsConfigVerde();
-+	setHdmiBasicVideoConfigVerde(mode);
++	configDpLinkTrainingVerde(vrr);
++	setTmdsConfigVerde(vrr);
++	setHdmiBasicVideoConfigVerde(mode, bpc, format, vrr, allm);
++	if (READ_ONCE(verde_allm))
++		allm_record(generation, allm, true);
++	WRITE_ONCE(vrr_setup_pending, false);
++	if (vrr)
++		pr_info("verde: VRR on, up to %d Hz\n", drm_mode_vrefresh(mode));
++	mutex_unlock(&frl_setup_lock);
++	return 0;
++}
++
++/* ALLM on a running output, as the PS5 OS changes it without a mode set. */
++static int setAllmVerde(bool on)
++{
++	i2c_init(2);
++	if (on) {
++		i2c_write_data(0x30e0, (u8 *)verde_hf_vsif, sizeof(verde_hf_vsif));
++		i2c_mask(0x3001, 0x10, 0x30);
++		i2c_mask(0x3006, 0x20, 0x30);
++	} else {
++		i2c_mask(0x3001, 0x20, 0x30);
++	}
++	i2c_cmd_2_1(0x300a, 0x01);
++	return i2c_exec();
 +}
 +
 +static void setAudioConfigForVerde(int channels)
@@ -11967,7 +12881,11 @@ index 000000000000..3b2fe47c74a2
 +	setAudioConfigForVerde(channels);
 +}
 +
++static int verde_apply_plan(const struct ps5_hdmi_plan *plan, bool source_vrr,
++			    struct ps5_hdmi_setup_result *result);
++
 +#include "frl-native.inc"
++#include "frl-verde.inc"
 +
 +/* amdgpu: whether the connector content type is Game, for the next ALLM decision */
 +void ps5_hdmi_allm_request(bool game)
@@ -11983,7 +12901,8 @@ index 000000000000..3b2fe47c74a2
 +	bool on, ready, valid, active;
 +	int ret = 0;
 +
-+	if (hdmi_ic_type != HDMI_IC_TYPE_FLAVA3)
++	if (hdmi_ic_type != HDMI_IC_TYPE_FLAVA3 &&
++	    !(hdmi_ic_type == HDMI_IC_TYPE_VERDE && READ_ONCE(verde_allm)))
 +		return 0;
 +	mutex_lock(&frl_setup_lock);
 +	mutex_lock(&frl_state_lock);
@@ -11994,7 +12913,7 @@ index 000000000000..3b2fe47c74a2
 +	on = allm_wanted();
 +	mutex_unlock(&frl_state_lock);
 +	if (ready && (!valid || on != active)) {
-+		ret = setAllmFlava3(on);
++		ret = hdmi_ic_type == HDMI_IC_TYPE_VERDE ? setAllmVerde(on) : setAllmFlava3(on);
 +		if (!allm_record(generation, on, !ret))
 +			ret = -ENODEV;
 +		if (ret)
@@ -12047,6 +12966,7 @@ index 000000000000..3b2fe47c74a2
 +	int ret = 0;
 +
 +	mutex_lock(&frl_setup_lock);
++	WRITE_ONCE(vrr_setup_pending, ps5_hdmi_vrr_enabled() && READ_ONCE(vrr_range));
 +	allm_reset();
 +	if (hdmi_ic_type == HDMI_IC_TYPE_FLAVA3) {
 +		/* As in the FRL setup, 5/1 comes first and applies at the next start. */
@@ -12128,11 +13048,18 @@ index 000000000000..3b2fe47c74a2
 +	return false;
 +}
 +
++static bool frl_backend_enabled(void)
++{
++	if (hdmi_ic_type == HDMI_IC_TYPE_VERDE)
++		return READ_ONCE(verde_frl);
++	return READ_ONCE(frl_4k120) && hdmi_ic_type == HDMI_IC_TYPE_FLAVA3 &&
++	       frl_wiring_valid();
++}
++
 +bool getHdmiFrlConfig(const struct drm_display_mode *mode, unsigned int max_bpc,
 +		      struct ps5_hdmi_frl_config *config)
 +{
-+	return READ_ONCE(frl_4k120) && hdmi_ic_type == HDMI_IC_TYPE_FLAVA3 &&
-+	       frl_wiring_valid() && frl_mode_config(mode, max_bpc, config);
++	return frl_backend_enabled() && frl_mode_config(mode, max_bpc, config);
 +}
 +EXPORT_SYMBOL(getHdmiFrlConfig);
 +
@@ -12187,16 +13114,31 @@ index 000000000000..3b2fe47c74a2
 +}
 +EXPORT_SYMBOL(ps5_hdmi_plan_connection_failed);
 +
-+int sceHdmiSetVideoConfig(const struct drm_display_mode *mode, unsigned int bpc, bool yuv422)
++int sceHdmiSetVideoConfigResult(const struct drm_display_mode *mode,
++				unsigned int bpc, bool yuv422, bool source_vrr,
++				unsigned int generation,
++				struct ps5_hdmi_setup_result *result)
 +{
++	struct ps5_hdmi_setup_result unused;
++
++	if (!result)
++		result = &unused;
++	*result = (struct ps5_hdmi_setup_result) { 0 };
 +	if (isHdmiFrlTiming(mode)) {
 +		pr_warn("FRL timing requires sceHdmiSetFrlVideoConfig()\n");
 +		return -EINVAL;
 +	}
 +	if (hdmi_ic_type == HDMI_IC_TYPE_FLAVA3)
-+		return setHdmiVideoConfigFlava3(mode, bpc, yuv422);
-+	setHdmiVideoConfigVerde(mode);
-+	return 0;
++		return setHdmiVideoConfigFlava3(mode, bpc, yuv422, source_vrr,
++					      generation, result);
++	return setHdmiVideoConfigVerde(mode, bpc, yuv422, source_vrr, generation, result);
++}
++EXPORT_SYMBOL(sceHdmiSetVideoConfigResult);
++
++int sceHdmiSetVideoConfig(const struct drm_display_mode *mode, unsigned int bpc, bool yuv422)
++{
++	return sceHdmiSetVideoConfigResult(mode, bpc, yuv422, false,
++					   frl_get_sink_generation(), NULL);
 +}
 +EXPORT_SYMBOL(sceHdmiSetVideoConfig);
 +
@@ -12204,21 +13146,37 @@ index 000000000000..3b2fe47c74a2
 +{
 +	if (hdmi_ic_type == HDMI_IC_TYPE_FLAVA3) {
 +		setHdrConfigFlava3(frame, bt2020);
++		return;
 +	}
++	guard(mutex)(&verde_if_lock);
++	verde_if.bt2020 = bt2020;
++	verde_if.hdr = frame && frame->eotf != HDMI_EOTF_TRADITIONAL_GAMMA_SDR;
++	if (verde_if.hdr)
++		verde_if.frame = *frame;
++	verde_if_update();
 +}
 +EXPORT_SYMBOL(sceHdmiSetHdrConfig);
 +
 +/* The converter resets RGB range signaling to full on each modeset. */
 +void sceHdmiSetRgbRange(bool limited)
 +{
-+	if (hdmi_ic_type == HDMI_IC_TYPE_FLAVA3)
++	if (hdmi_ic_type == HDMI_IC_TYPE_FLAVA3) {
 +		setRgbRangeFlava3(limited);
++		return;
++	}
++	guard(mutex)(&verde_if_lock);
++	verde_if.limited = limited;
++	verde_if_update();
 +}
 +EXPORT_SYMBOL(sceHdmiSetRgbRange);
 +
 +int sceHdmiDeviceSetVideoMute(int mute)
 +{
 +	int ret;
++
++	/* Stay muted until VRR setup completes. */
++	if (mute != 1 && READ_ONCE(vrr_setup_pending))
++		return -EAGAIN;
 +
 +	i2c_init(4);
 +	if (hdmi_ic_type == HDMI_IC_TYPE_FLAVA3) {
@@ -12385,8 +13343,7 @@ index 000000000000..3b2fe47c74a2
 +		.y444_depths = BIT(8) |
 +			(info->edid_hdmi_ycbcr444_dc_modes & DRM_EDID_HDMI_DC_30 ? BIT(10) : 0) |
 +			(info->edid_hdmi_ycbcr444_dc_modes & DRM_EDID_HDMI_DC_36 ? BIT(12) : 0),
-+		.enabled = READ_ONCE(frl_4k120) && hdmi_ic_type == HDMI_IC_TYPE_FLAVA3 &&
-+			   frl_wiring_valid(),
++		.enabled = frl_backend_enabled(),
 +	};
 +	enum ps5_hdmi_plan_status status;
 +	u8 rate, y420_mode, vic = drm_match_cea_mode(mode);
@@ -12397,6 +13354,9 @@ index 000000000000..3b2fe47c74a2
 +		.min_rate = 4,
 +	};
 +
++	/* Plan an EOTF 0 InfoFrame as SDR. */
++	if (metadata && metadata->eotf == HDMI_EOTF_TRADITIONAL_GAMMA_SDR)
++		metadata = NULL;
 +	if (!caps.enabled)
 +		return PS5_HDMI_PLAN_BACKEND;
 +	if (drm_mode_is_420_only(info, mode) && !yuv420)
@@ -12432,6 +13392,9 @@ index 000000000000..3b2fe47c74a2
 +		caps.formats |= BIT(PS5_HDMI_420);
 +	if (drm_mode_is_420_only(info, mode) || y420_mode & Y420_ONLY)
 +		caps.formats &= BIT(PS5_HDMI_420);
++	/* The VERDE path sends RGB and 4:2:2 only. */
++	if (hdmi_ic_type == HDMI_IC_TYPE_VERDE)
++		caps.formats &= BIT(PS5_HDMI_RGB) | BIT(PS5_HDMI_422);
 +	in.ycbcr422 = true;
 +	policy_reason = frl_4k120_reason(&in);
 +	if (!frl_edid_valid) {
@@ -12509,6 +13472,10 @@ index 000000000000..3b2fe47c74a2
 +	if (!getHdmiExtendedModes())
 +		return false;
 +
++	/* 1080p100 is in the converter's VIC table. */
++	if (drm_match_cea_mode(mode) == 64)
++		return true;
++
 +	/* Use the stock 1440p setup up to 297 MHz. */
 +	if (mode->hdisplay == 2560 && mode->vdisplay == 1440 &&
 +	    mode->clock <= 297000) {
@@ -12546,9 +13513,33 @@ index 000000000000..3b2fe47c74a2
 + */
 +bool isHdmiDeepColorSupported(void)
 +{
-+	return hdmi_ic_type == HDMI_IC_TYPE_FLAVA3;
++	return hdmi_ic_type == HDMI_IC_TYPE_FLAVA3 || READ_ONCE(verde_deep_colour);
 +}
 +EXPORT_SYMBOL(isHdmiDeepColorSupported);
++
++/* Highest bpc amdgpu may try for @mode; FLAVA3 keeps the requested value. */
++unsigned int ps5_hdmi_bpc_limit(const struct drm_display_mode *mode,
++				const struct drm_display_info *info, unsigned int requested)
++{
++	unsigned int bpc, khz;
++
++	if (hdmi_ic_type == HDMI_IC_TYPE_FLAVA3)
++		return requested;
++	/* The FRL plan picks the depth for these modes. */
++	if (READ_ONCE(verde_frl) && (isHdmiFrlTiming(mode) || drm_match_cea_mode(mode) == 97))
++		return requested;
++	requested = requested ?: 16;
++	if (!READ_ONCE(verde_deep_colour))
++		return min(requested, 8U);
++	khz = min(info->max_tmds_clock ?: 165000, 600000);
++	if (!info->hdmi.scdc.supported || !info->hdmi.scdc.scrambling.supported)
++		khz = min(khz, 340000U);
++	for (bpc = 12; bpc > 8; bpc -= 2)
++		if (bpc <= requested && (u64)mode->clock * bpc <= (u64)khz * 8)
++			return bpc;
++	return 8;
++}
++EXPORT_SYMBOL(ps5_hdmi_bpc_limit);
 +
 +static DEFINE_MUTEX(hdmi_edid_lock);
 +static const struct drm_edid *real_edid;
@@ -12673,14 +13664,21 @@ index 000000000000..3b2fe47c74a2
 +	}
 +	hdmi_log_notification(msg);
 +	if (msg->data[1] == 0x01) {
++		unsigned int since = 0, strike;
++
 +		mutex_lock(&frl_state_lock);
++		strike = frl_drop_note_unplug(READ_ONCE(frl_drop_ms), &since);
 +		frl_sink_generation++;
 +		memset(&frl_failures, 0, sizeof(frl_failures));
 +		frl_failed = false;
 +		frl_edid_valid = false;
 +		WRITE_ONCE(sink_allm, false);
++		WRITE_ONCE(sink_hf_vrr, false);
 +		allm_reset_locked();
 +		mutex_unlock(&frl_state_lock);
++		if (strike)
++			pr_info("native FRL: display dropped %u ms after start, %s\n",
++				since, strike == 1 ? "retrying once" : "second strike");
 +		last_edid_size = 0;
 +		WRITE_ONCE(hdcp_abort_until, jiffies);
 +		hdmi_request_unplug();
@@ -12691,20 +13689,27 @@ index 000000000000..3b2fe47c74a2
 +	    time_before(jiffies, READ_ONCE(hdcp_abort_until))) {
 +		int ret = stopHdcpHw();
 +
-+		sceHdmiDeviceSetVideoMute(0);
-+		sceHdmiSetAudioMute(0);
-+		pr_info("HDCP failed (event 4): stopped HDCP (%d) and unmuted\n", ret);
++		if (!READ_ONCE(vrr_setup_pending)) {
++			sceHdmiDeviceSetVideoMute(0);
++			sceHdmiSetAudioMute(0);
++			pr_info("HDCP failed (event 4): stopped HDCP (%d) and unmuted\n", ret);
++		} else {
++			pr_info("HDCP stopped (%d); unmute deferred until VRR setup completes\n",
++				ret);
++		}
 +	}
 +
 +	if (msg->data[1] == 0x02) {
 +		u16 size = get_unaligned_le16(msg->data + 2);
 +		const struct drm_edid *edid = NULL;
 +		u8 byte0 = 0, frl_rate = 0, rate_max, max_frl = 0, dsc_frl = 0;
-+		bool same, ycbcr422 = false, ycbcr444 = false, allm_cap = false;
++		bool same, ycbcr422 = false, ycbcr444 = false, allm_cap = false, hf_vrr = false;
 +		char vendor[4] = "";
 +		u16 product = 0;
 +		u32 crc = 0;
 +		u8 y420_modes[256] = {};
++		struct drm_display_mode dropped_mode;
++		bool dropped;
 +
 +		if (size < EDID_LENGTH || size > msg->length - sizeof(*msg) - 4) {
 +			pr_warn("bad EDID size %u\n", size);
@@ -12719,6 +13724,7 @@ index 000000000000..3b2fe47c74a2
 +			ycbcr444 = edid_cta_ycbcr444(&msg->data[4], size);
 +			edid_cta_y420(&msg->data[4], size, y420_modes);
 +			allm_cap = edid_hf_allm(&msg->data[4], size);
++			hf_vrr = edid_hf_vrr(&msg->data[4], size);
 +			edid_hf_frl(&msg->data[4], size, &max_frl, &dsc_frl);
 +			edid_vendor(&msg->data[4], vendor, &product);
 +		}
@@ -12733,6 +13739,7 @@ index 000000000000..3b2fe47c74a2
 +			ycbcr422 = false;
 +			ycbcr444 = false;
 +			allm_cap = false;
++			hf_vrr = false;
 +		}
 +		mutex_lock(&frl_state_lock);
 +		if (!edid || !frl_edid_valid || crc != frl_edid_crc) {
@@ -12746,14 +13753,22 @@ index 000000000000..3b2fe47c74a2
 +		}
 +		frl_edid_valid = edid;
 +		frl_edid_crc = crc;
++		dropped = frl_drop_note_edid(edid, crc);
++		if (dropped)
++			dropped_mode = frl_drop.pending.mode;
 +		rate_max = frl_rate_max;
 +		memcpy(sink_y420_modes, y420_modes, sizeof(sink_y420_modes));
 +		WRITE_ONCE(sink_cta_422, ycbcr422);
 +		WRITE_ONCE(sink_cta_444, ycbcr444);
 +		WRITE_ONCE(sink_allm, allm_cap);
++		WRITE_ONCE(sink_hf_vrr, hf_vrr);
 +		WRITE_ONCE(frl_trained_rate, frl_rate);
 +		mutex_unlock(&frl_state_lock);
 +		WRITE_ONCE(frl_decision_logged, -1);
++		if (dropped)
++			pr_info("native FRL: %ux%u@%d marked failed after two early drops\n",
++				dropped_mode.hdisplay, dropped_mode.vdisplay,
++				drm_mode_vrefresh(&dropped_mode));
 +
 +		last_edid_size = edid && size <= sizeof(last_edid) ? size : 0;
 +		memcpy(last_edid, &msg->data[4], last_edid_size);
@@ -12772,8 +13787,12 @@ index 000000000000..3b2fe47c74a2
 +		/* An HDCP abort mutes video without changing the sink. */
 +		if (same && time_before(jiffies, READ_ONCE(hdcp_abort_until))) {
 +			WRITE_ONCE(hdcp_abort_until, jiffies);
-+			pr_info("HDCP failed, unmuting video\n");
-+			sceHdmiDeviceSetVideoMute(0);
++			if (!READ_ONCE(vrr_setup_pending)) {
++				pr_info("HDCP failed, unmuting video\n");
++				sceHdmiDeviceSetVideoMute(0);
++			} else {
++				pr_info("HDCP abort: unmute deferred until VRR setup completes\n");
++			}
 +		} else {
 +			hdmi_request_hotplug();
 +		}
@@ -15173,12 +16192,521 @@ index 000000000000..5ea1519823c3
 +#define PS5_TARGETTEMP_SHIFT	8
 +
 +#endif /* _PS5_FAN_H */
+diff --git a/drivers/ps5/ps5_rtc.c b/drivers/ps5/ps5_rtc.c
+new file mode 100644
+index 000000000000..69a4552233a9
+--- /dev/null
++++ b/drivers/ps5/ps5_rtc.c
+@@ -0,0 +1,503 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * PS5 real-time clock.
++ *
++ * The Salina counter (BAR4 0x80d0, valid when both 0x300 bits are set at
++ * 0x80cc) counts seconds since 2012-01-01 UTC and is never written. Sony keeps
++ * a per-console correction in registry key 0x05140000 (NVS partition 4,
++ * offset 0x6c): time = raw + epoch + correction.
++ *
++ * Setting the time saves a new correction the way Sony's OS does, only for
++ * the tested registry layout, at most a week from the stored value and
++ * PS5_RTC_MAX_SAVES times per boot. A failed save stops saving until reboot.
++ */
++
++#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
++
++#include <linux/module.h>
++#include <linux/pci.h>
++#include <linux/ps5.h>
++#include <linux/rtc.h>
++#include <linux/delay.h>
++#include <linux/slab.h>
++#include <linux/timekeeping.h>
++#include <linux/unaligned.h>
++
++static bool enable = true;
++module_param(enable, bool, 0444);
++MODULE_PARM_DESC(enable, "Register the PS5 RTC (default on)");
++
++static bool allow_write = true;
++module_param_named(write, allow_write, bool, 0444);
++MODULE_PARM_DESC(write, "Save time changes to Sony's RTC correction in NVS (default on)");
++
++#define PS5_RTC_STATUS		0x80cc
++#define PS5_RTC_COUNTER		0x80d0
++#define PS5_RTC_VALID		0x300
++#define PS5_RTC_EPOCH		1325376000LL	/* 2012-01-01 UTC */
++#define PS5_RTC_ATTEMPTS	16
++#define PS5_RTC_MIN_UTC		946684800LL	/* 2000-01-01 */
++#define PS5_RTC_MAX_UTC		4102444799LL	/* 2099-12-31 */
++#define PS5_RTC_SANE_UTC	1735689600LL	/* 2025-01-01 */
++#define PS5_RTC_MAX_CORRECTION	(10 * 366 * 86400LL)
++#define PS5_RTC_MAX_STEP	(7 * 86400LL)
++/* Smaller changes are counter phase jitter and are not saved. */
++#define PS5_RTC_MIN_CHANGE	5
++#define PS5_RTC_MAX_SAVES	4
++
++#define PS5_NVS_PART		4
++#define PS5_NVS_CHUNKS		4
++#define PS5_NVS_CHUNK		0x300
++#define PS5_REG_IMAGE		(PS5_NVS_CHUNKS * PS5_NVS_CHUNK)
++#define PS5_REG_GENERATION	0x0a
++#define PS5_REG_SUM1		0x10
++#define PS5_REG_LAYOUT		0x24
++#define PS5_REG_CORRECTION	0x6c
++#define PS5_REG_HALF		0x600
++#define PS5_REG_SAVED_US	0x604
++#define PS5_REG_SUM2		0x620
++#define PS5_REG_USED2		0x624
++#define PS5_REG_MAGIC1		0x19680228
++#define PS5_REG_MAGIC2		0x19990816
++
++static const u16 ps5_nvs_offsets[PS5_NVS_CHUNKS] = { 0x1000, 0x1300, 0x1620, 0x1920 };
++/* Registry header of the layout with the correction at 0x6c. */
++static const u8 ps5_reg_head1[4] = { 0x01, 0x00, 0x30, 0x01 };
++static const u8 ps5_reg_head2[4] = { 0x31, 0x00, 0x70, 0x01 };
++#define PS5_REG_LAYOUT_ID	0x01320001
++
++struct ps5_rtc {
++	s64 correction;
++	u32 last;
++	u8 saves;
++	bool save_off;		/* no more saves this boot */
++	bool step_logged;
++	struct mutex lock;	/* protects the fields above */
++};
++
++/* RTC ops get the spcie device, whose drvdata is spcie's. */
++static struct ps5_rtc *ps5_rtc;
++static void *ps5_rtc_group;
++
++static u32 ps5_rtc_reg(u32 offset)
++{
++	return spcie_pervasive0_4000_read(offset - 0x4000);
++}
++
++static int ps5_rtc_counter(u32 *counter)
++{
++	u32 before, after, first, second;
++	unsigned int i;
++
++	for (i = 0; i < PS5_RTC_ATTEMPTS; i++) {
++		before = ps5_rtc_reg(PS5_RTC_STATUS);
++		first = ps5_rtc_reg(PS5_RTC_COUNTER);
++		usleep_range(100, 200);
++		second = ps5_rtc_reg(PS5_RTC_COUNTER);
++		after = ps5_rtc_reg(PS5_RTC_STATUS);
++		if (before == ~0U || after == ~0U || first == ~0U || second == ~0U)
++			return -EIO;
++		if ((before & PS5_RTC_VALID) != PS5_RTC_VALID ||
++		    (after & PS5_RTC_VALID) != PS5_RTC_VALID)
++			return -EINVAL;
++		if (first == second) {
++			*counter = second;
++			return 0;
++		}
++	}
++	return -ETIMEDOUT;
++}
++
++static int ps5_rtc_utc(u32 counter, s64 correction, s64 *utc)
++{
++	if (check_add_overflow((s64)counter + PS5_RTC_EPOCH, correction, utc) ||
++	    *utc < PS5_RTC_MIN_UTC || *utc > PS5_RTC_MAX_UTC)
++		return -ERANGE;
++	return 0;
++}
++
++static bool ps5_rtc_correction_ok(s64 correction)
++{
++	return correction > -PS5_RTC_MAX_CORRECTION && correction < PS5_RTC_MAX_CORRECTION;
++}
++
++static bool ps5_rtc_sane(u32 counter, s64 correction)
++{
++	s64 utc;
++
++	return !ps5_rtc_utc(counter, correction, &utc) && utc >= PS5_RTC_SANE_UTC;
++}
++
++/* Sony's registry container checksum over 0x600 bytes, magic in @slot. */
++static u32 ps5_reg_checksum(const u8 *data, unsigned int slot, u32 magic)
++{
++	static const u8 seed[8] = { 0x72, 0x02, 0x85, 0x61, 0xe0, 0x1c, 0xbb, 0x89 };
++	u64 state = 0x89bb1ce061850272ULL;
++	unsigned int i;
++	u8 x;
++
++	for (i = 0; i < PS5_REG_HALF; i++) {
++		x = i >= slot && i < slot + 4 ? magic >> ((i - slot) * 8) : data[i];
++		state = (x ? x : 3) * (state + ((u64)(seed[i % 8] ^ x) << ((i % 8) * 8)));
++	}
++	return state >> 32;
++}
++
++static u32 ps5_reg_sum1(const u8 *image)
++{
++	return ps5_reg_checksum(image, PS5_REG_SUM1, PS5_REG_MAGIC1);
++}
++
++static u32 ps5_reg_sum2(const u8 *image)
++{
++	return ps5_reg_checksum(image + PS5_REG_HALF, PS5_REG_SUM2 - PS5_REG_HALF,
++				PS5_REG_MAGIC2);
++}
++
++static bool ps5_reg_valid(const u8 *image)
++{
++	return get_unaligned_be32(image + PS5_REG_SUM1) == ps5_reg_sum1(image) &&
++	       get_unaligned_be32(image + PS5_REG_SUM2) == ps5_reg_sum2(image);
++}
++
++/* Accept only the layout seen on the tested consoles. */
++static bool ps5_reg_known(const u8 *image)
++{
++	return !memcmp(image, ps5_reg_head1, sizeof(ps5_reg_head1)) &&
++	       !memcmp(image + 6, ps5_reg_head2, sizeof(ps5_reg_head2)) &&
++	       get_unaligned_le32(image + PS5_REG_LAYOUT) == PS5_REG_LAYOUT_ID &&
++	       get_unaligned_le16(image + PS5_REG_USED2) < 0xbc1;
++}
++
++/* Only the fields Sony's save changes may differ between two images. */
++static bool ps5_reg_allowed(unsigned int i)
++{
++	return (i >= PS5_REG_GENERATION && i < PS5_REG_GENERATION + 2) ||
++	       (i >= PS5_REG_SUM1 && i < PS5_REG_SUM1 + 4) ||
++	       (i >= PS5_REG_CORRECTION && i < PS5_REG_CORRECTION + 8) ||
++	       (i >= PS5_REG_SAVED_US && i < PS5_REG_SAVED_US + 4) ||
++	       (i >= PS5_REG_SUM2 && i < PS5_REG_SUM2 + 4);
++}
++
++static int ps5_reg_update(const u8 *old, u8 *next, s64 correction, u64 now_us)
++{
++	unsigned int i;
++
++	memcpy(next, old, PS5_REG_IMAGE);
++	put_unaligned_le64(correction, next + PS5_REG_CORRECTION);
++	put_unaligned_le16(get_unaligned_le16(old + PS5_REG_GENERATION) + 1,
++			   next + PS5_REG_GENERATION);
++	put_unaligned_le32(lower_32_bits(now_us), next + PS5_REG_SAVED_US);
++	put_unaligned_be32(ps5_reg_sum1(next), next + PS5_REG_SUM1);
++	put_unaligned_be32(ps5_reg_sum2(next), next + PS5_REG_SUM2);
++
++	if (!ps5_reg_valid(old) || !ps5_reg_valid(next))
++		return -EINVAL;
++	for (i = 0; i < PS5_REG_IMAGE; i++)
++		if (!ps5_reg_allowed(i) && old[i] != next[i])
++			return -EPERM;
++	return 0;
++}
++
++/* One fixed NVS chunk read (type 1) or write (type 0); @packet is scratch. */
++static int ps5_nvs_chunk(u8 *packet, bool save, unsigned int index, u8 *data)
++{
++	struct icc_msg *msg = (void *)packet;
++	int ret;
++
++	memset(packet, 0, ICC_MSG_MAX_SIZE);
++	msg->service_id = ICC_SERVICE_ID_NVS;
++	msg->msg_type = save ? 0 : 1;
++	msg->length = save ? 18 + PS5_NVS_CHUNK : ICC_MSG_MIN_SIZE;
++	msg->data[1] = PS5_NVS_PART;
++	put_unaligned_le16(ps5_nvs_offsets[index], &msg->data[2]);
++	put_unaligned_le16(PS5_NVS_CHUNK, &msg->data[4]);
++	if (save)
++		memcpy(&msg->data[6], data, PS5_NVS_CHUNK);
++
++	ret = icc_query(packet, packet);
++	if (ret)
++		return ret;
++	if (msg->magic != 0x42 || msg->service_id != ICC_SERVICE_ID_NVS ||
++	    msg->msg_type != (save ? 0x4000 : 0x4001) ||
++	    msg->length < 14 || msg->length > ICC_MSG_MAX_SIZE)
++		return -EPROTO;
++	if (get_unaligned_le16(&msg->data[0]))
++		return -EIO;
++	if (!save) {
++		if (msg->length < 14 + PS5_NVS_CHUNK)
++			return -EPROTO;
++		memcpy(data, &msg->data[2], PS5_NVS_CHUNK);
++	}
++	return 0;
++}
++
++static int ps5_nvs_read_image(u8 *packet, u8 *image)
++{
++	unsigned int i;
++	int ret;
++
++	for (i = 0; i < PS5_NVS_CHUNKS; i++) {
++		ret = ps5_nvs_chunk(packet, false, i, image + i * PS5_NVS_CHUNK);
++		if (ret)
++			return ret;
++	}
++	if (!ps5_reg_valid(image))
++		return -EBADMSG;
++	return ps5_reg_known(image) ? 0 : -EOPNOTSUPP;
++}
++
++static int ps5_rtc_read_correction(s64 *correction)
++{
++	u8 *image, *packet;
++	int ret = -ENOMEM;
++
++	image = kzalloc(PS5_REG_IMAGE, GFP_KERNEL);
++	packet = kzalloc(ICC_MSG_MAX_SIZE, GFP_KERNEL);
++	if (image && packet)
++		ret = ps5_nvs_read_image(packet, image);
++	if (!ret)
++		*correction = (s64)get_unaligned_le64(image + PS5_REG_CORRECTION);
++	kfree_sensitive(packet);
++	kfree_sensitive(image);
++	return ret;
++}
++
++/* Check, re-read, write once (no retries), then verify the read-back. */
++static int ps5_rtc_save_correction(s64 expected, s64 correction)
++{
++	u8 *old, *next, *seen, *packet;
++	unsigned int i;
++	int ret = -ENOMEM;
++
++	old = kzalloc(PS5_REG_IMAGE, GFP_KERNEL);
++	next = kzalloc(PS5_REG_IMAGE, GFP_KERNEL);
++	seen = kzalloc(PS5_REG_IMAGE, GFP_KERNEL);
++	packet = kzalloc(ICC_MSG_MAX_SIZE, GFP_KERNEL);
++	if (!old || !next || !seen || !packet)
++		goto out;
++
++	ret = ps5_nvs_read_image(packet, old);
++	if (ret)
++		goto out;
++	if ((s64)get_unaligned_le64(old + PS5_REG_CORRECTION) != expected) {
++		ret = -ESTALE;
++		goto out;
++	}
++	ret = ps5_reg_update(old, next, correction,
++			     div_u64(ktime_get_real_ns(), NSEC_PER_USEC));
++	if (ret)
++		goto out;
++	ret = ps5_nvs_read_image(packet, seen);
++	if (ret)
++		goto out;
++	if (memcmp(seen, old, PS5_REG_IMAGE)) {
++		ret = -ESTALE;
++		goto out;
++	}
++	for (i = 0; i < PS5_NVS_CHUNKS; i++) {
++		ret = ps5_nvs_chunk(packet, true, i, next + i * PS5_NVS_CHUNK);
++		if (ret)
++			break;
++	}
++	if (!ret) {
++		ret = ps5_nvs_read_image(packet, seen);
++		if (!ret && memcmp(seen, next, PS5_REG_IMAGE))
++			ret = -EIO;
++	}
++out:
++	kfree_sensitive(packet);
++	kfree_sensitive(seen);
++	kfree_sensitive(next);
++	kfree_sensitive(old);
++	return ret;
++}
++
++static int ps5_rtc_read_time(struct device *dev, struct rtc_time *tm)
++{
++	struct ps5_rtc *rtc = ps5_rtc;
++	u32 counter;
++	s64 utc;
++	int ret;
++
++	if (!rtc || !spcie_is_initialized())
++		return -ENODEV;
++	mutex_lock(&rtc->lock);
++	ret = ps5_rtc_counter(&counter);
++	/* The counter only moves forward; a step back means a bad read. */
++	if (!ret && counter < rtc->last)
++		ret = -EINVAL;
++	if (!ret)
++		ret = ps5_rtc_utc(counter, rtc->correction, &utc);
++	if (!ret) {
++		rtc->last = counter;
++		rtc_time64_to_tm(utc, tm);
++	}
++	mutex_unlock(&rtc->lock);
++	return ret;
++}
++
++/* -ENODEV is the one error NTP does not retry. */
++static int ps5_rtc_save_stop(struct device *dev, struct ps5_rtc *rtc, int ret, const char *why)
++{
++	rtc->save_off = true;
++	dev_err(dev, "RTC correction not saved (%s): %d; saving is off until the next boot\n",
++		why, ret);
++	return ret;
++}
++
++static int ps5_rtc_set_time(struct device *dev, struct rtc_time *tm)
++{
++	struct ps5_rtc *rtc = ps5_rtc;
++	s64 correction, delta, readback;
++	u32 counter;
++	int ret;
++
++	if (!rtc || !spcie_is_initialized())
++		return -ENODEV;
++	mutex_lock(&rtc->lock);
++	ret = -ENODEV;
++	if (rtc->save_off)
++		goto out;
++	/* Counter errors do not stop saving. */
++	ret = ps5_rtc_counter(&counter);
++	if (!ret && counter < rtc->last)
++		ret = -EINVAL;
++	if (ret)
++		goto out;
++	rtc->last = counter;
++	correction = rtc_tm_to_time64(tm) - ((s64)counter + PS5_RTC_EPOCH);
++	delta = correction - rtc->correction;
++	if (delta > -PS5_RTC_MIN_CHANGE && delta < PS5_RTC_MIN_CHANGE)
++		goto out;
++
++	/* A week or more is a bad time source: refuse. */
++	if (delta <= -PS5_RTC_MAX_STEP || delta >= PS5_RTC_MAX_STEP ||
++	    !ps5_rtc_correction_ok(correction)) {
++		if (!rtc->step_logged)
++			dev_warn(dev, "RTC correction not saved: %+lld s is too far from the stored one\n",
++				 delta);
++		rtc->step_logged = true;
++		ret = -ERANGE;
++		goto out;
++	}
++	if (rtc->saves >= PS5_RTC_MAX_SAVES) {
++		ret = ps5_rtc_save_stop(dev, rtc, -ENODEV, "save limit for this boot");
++		goto out;
++	}
++	if (!ps5_rtc_correction_ok(rtc->correction) || !ps5_rtc_sane(counter, rtc->correction)) {
++		ret = ps5_rtc_save_stop(dev, rtc, -ENODEV, "stored value is not a correction");
++		goto out;
++	}
++
++	ret = ps5_rtc_save_correction(rtc->correction, correction);
++	if (!ret) {
++		rtc->correction = correction;
++		rtc->saves++;
++		dev_info(dev, "RTC correction saved (%+lld s)\n", delta);
++	} else {
++		ps5_rtc_save_stop(dev, rtc, ret, "save failed");
++		/* Keep reads in step with whatever NVS now holds. */
++		if (!ps5_rtc_read_correction(&readback) && ps5_rtc_correction_ok(readback))
++			rtc->correction = readback;
++	}
++out:
++	mutex_unlock(&rtc->lock);
++	return ret;
++}
++
++static const struct rtc_class_ops ps5_rtc_ops = {
++	.read_time = ps5_rtc_read_time,
++	.set_time = ps5_rtc_set_time,
++};
++
++static const struct rtc_class_ops ps5_rtc_ro_ops = {
++	.read_time = ps5_rtc_read_time,
++};
++
++static void ps5_rtc_clear(void *data)
++{
++	ps5_rtc = NULL;
++}
++
++/* Called by spcie once BARs and ICC are up; failure only means no RTC. */
++int ps5_rtc_register(struct pci_dev *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct rtc_device *rtcdev;
++	struct ps5_rtc *rtc;
++	bool writable = allow_write;
++	void *group;
++	int ret;
++
++	if (!enable)
++		return 0;
++	/* Verified on base PS5 Salina/Salina2 (PCI revision 1) only. */
++	if (pdev->revision != 1)
++		return -ENODEV;
++	group = devres_open_group(dev, NULL, GFP_KERNEL);
++	if (!group)
++		return -ENOMEM;
++	ret = -ENOMEM;
++	rtc = devm_kzalloc(dev, sizeof(*rtc), GFP_KERNEL);
++	if (!rtc)
++		goto fail;
++	mutex_init(&rtc->lock);
++	/* Runs after the RTC is unregistered, before @rtc is freed. */
++	ret = devm_add_action(dev, ps5_rtc_clear, NULL);
++	if (ret)
++		goto fail;
++	ret = ps5_rtc_read_correction(&rtc->correction);
++	if (ret == -EOPNOTSUPP)
++		dev_notice(dev, "RTC not registered: registry format not recognised\n");
++	if (ret) {
++		dev_err_probe(dev, ret, "RTC correction unavailable\n");
++		goto fail;
++	}
++	ret = ps5_rtc_counter(&rtc->last);
++	if (!ret && !ps5_rtc_sane(rtc->last, rtc->correction))
++		ret = -ERANGE;
++	if (ret) {
++		dev_err_probe(dev, ret, "RTC counter or correction unusable\n");
++		goto fail;
++	}
++	if (writable && !ps5_rtc_correction_ok(rtc->correction)) {
++		dev_notice(dev, "RTC stored value is not a correction; registering read-only\n");
++		writable = false;
++	}
++
++	rtcdev = devm_rtc_allocate_device(dev);
++	if (IS_ERR(rtcdev)) {
++		ret = PTR_ERR(rtcdev);
++		goto fail;
++	}
++	rtcdev->ops = writable ? &ps5_rtc_ops : &ps5_rtc_ro_ops;
++	rtcdev->range_min = PS5_RTC_MIN_UTC;
++	rtcdev->range_max = PS5_RTC_MAX_UTC;
++	clear_bit(RTC_FEATURE_ALARM, rtcdev->features);
++	clear_bit(RTC_FEATURE_UPDATE_INTERRUPT, rtcdev->features);
++	ps5_rtc = rtc;
++	ret = devm_rtc_register_device(rtcdev);
++	if (ret)
++		goto fail;
++	devres_close_group(dev, group);
++	ps5_rtc_group = group;
++	dev_info(dev, "RTC registered (%s)\n", writable ? "read-write" : "read-only");
++	dev_dbg(dev, "RTC correction %lld s\n", rtc->correction);
++	return 0;
++
++fail:
++	devres_release_group(dev, group);
++	return ret;
++}
++
++/* Called by spcie before it stops ICC; waits for any running read or save. */
++void ps5_rtc_unregister(struct pci_dev *pdev)
++{
++	void *group = ps5_rtc_group;
++
++	if (!group)
++		return;
++	ps5_rtc_group = NULL;
++	devres_release_group(&pdev->dev, group);
++}
 diff --git a/drivers/ps5/spcie.c b/drivers/ps5/spcie.c
 new file mode 100644
-index 000000000000..375c83d7ac09
+index 000000000000..3a8ed5a79eb3
 --- /dev/null
 +++ b/drivers/ps5/spcie.c
-@@ -0,0 +1,1011 @@
+@@ -0,0 +1,1016 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +
 +#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -16149,6 +17677,8 @@ index 000000000000..375c83d7ac09
 +	spcie_initialized = true;
 +
 +	pci_set_drvdata(pdev, sdev);
++
++	ps5_rtc_register(pdev);
 +	return 0;
 +}
 +
@@ -16156,6 +17686,8 @@ index 000000000000..375c83d7ac09
 +{
 +	struct spcie_dev *sdev = pci_get_drvdata(pdev);
 +	if (sdev) {
++		/* The RTC uses ICC: stop it first. */
++		ps5_rtc_unregister(pdev);
 +		WRITE_ONCE(spcie_initialized, false);
 +		spcie_icc_remove(sdev);
 +		icc_dev = NULL;
@@ -16167,6 +17699,7 @@ index 000000000000..375c83d7ac09
 +{
 +	struct spcie_dev *sdev = pci_get_drvdata(pdev);
 +	if (sdev) {
++		ps5_rtc_unregister(pdev);
 +		spcie_icc_shutdown(sdev);
 +	}
 +}
@@ -18229,10 +19762,10 @@ index fbb62f7c3111..18edd8279773 100644
  extern void dmi_setup(void);
 diff --git a/include/linux/ps5.h b/include/linux/ps5.h
 new file mode 100755
-index 000000000000..b3603e351338
+index 000000000000..6864cab31537
 --- /dev/null
 +++ b/include/linux/ps5.h
-@@ -0,0 +1,262 @@
+@@ -0,0 +1,283 @@
 +/* SPDX-License-Identifier: GPL-2.0-only */
 +
 +#ifndef _LINUX_PS5_H
@@ -18297,6 +19830,10 @@ index 000000000000..b3603e351338
 +u32 spcie_pervasive0_4000_read(u32 reg);
 +
 +int icc_query(u8 *query, u8 *reply);
++
++struct pci_dev;
++int ps5_rtc_register(struct pci_dev *pdev);
++void ps5_rtc_unregister(struct pci_dev *pdev);
 +
 +void hdmiSystemResume(void);
 +int sceHdmiInitVideoConfig(void);
@@ -18380,10 +19917,25 @@ index 000000000000..b3603e351338
 +
 +void ps5_hdmi_recovery_report(const struct ps5_hdmi_recovery_status *status);
 +int ps5_hdmi_apply_plan(const struct ps5_hdmi_plan *plan);
++struct ps5_hdmi_setup_result {
++	u32 generation;
++	bool retry_fixed;
++};
++
++int ps5_hdmi_apply_plan_result(const struct ps5_hdmi_plan *plan, bool source_vrr,
++			       struct ps5_hdmi_setup_result *result);
++int sceHdmiSetVideoConfigResult(const struct drm_display_mode *mode,
++				unsigned int bpc, bool yuv422, bool source_vrr,
++				unsigned int generation,
++				struct ps5_hdmi_setup_result *result);
 +bool ps5_hdmi_recovery_enabled(void);
 +void ps5_hdmi_allm_request(bool game);
 +int ps5_hdmi_allm_update(void);
 +void ps5_hdmi_allm_queue_update(void);
++bool ps5_hdmi_vrr_enabled(void);
++void ps5_hdmi_vrr_set_caps(unsigned int min_hz, unsigned int max_hz);
++bool ps5_hdmi_vrr_allowed(const struct drm_display_mode *mode);
++bool ps5_hdmi_vrr_failed(void);
 +bool ps5_hdmi_plan_connection_failed(const struct ps5_hdmi_plan *plan);
 +const char *ps5_hdmi_plan_reason(enum ps5_hdmi_plan_status status);
 +
@@ -18407,6 +19959,8 @@ index 000000000000..b3603e351338
 +bool isHdmiHdrSupported(void);
 +bool isHdmiNative420Supported(void);
 +bool isHdmiDeepColorSupported(void);
++unsigned int ps5_hdmi_bpc_limit(const struct drm_display_mode *mode,
++				const struct drm_display_info *info, unsigned int requested);
 +
 +int icc_nvs_write(u32 partition, u16 offset, u16 length, const void *data);
 +int icc_nvs_read(u32 partition, u16 offset, u16 length, void *data);
@@ -18573,10 +20127,10 @@ index 24015c73a67f..6c134508a759 100644
  	{ PCI_VDEVICE(ATI, 0x15b3),
 diff --git a/drivers/ps5/frl-detect.inc b/drivers/ps5/frl-detect.inc
 new file mode 100644
-index 000000000000..e7f1b56d404a
+index 000000000000..46fd8119d33d
 --- /dev/null
 +++ b/drivers/ps5/frl-detect.inc
-@@ -0,0 +1,224 @@
+@@ -0,0 +1,260 @@
 +/* SPDX-License-Identifier: GPL-2.0-only */
 +/*
 + * EDID inputs for the 4K120 decision, and the decision itself. No IC access.
@@ -18741,6 +20295,42 @@ index 000000000000..e7f1b56d404a
 +		}
 +	}
 +	return found;
++}
++
++/* HDMI VRR in the HF-VSDB or HF-SCDB: a nonzero VRRmax at +9 and +10. */
++static bool edid_hf_vrr(const u8 *edid, size_t size)
++{
++	size_t off, i;
++
++	if (size < EDID_LENGTH)
++		return false;
++	size = min(size, (size_t)(edid[126] + 1) * EDID_LENGTH);
++	for (off = EDID_LENGTH; off + EDID_LENGTH <= size; off += EDID_LENGTH) {
++		const u8 *blk = edid + off;
++		u8 end = blk[2], sum = 0;
++
++		if (blk[0] != 2 || blk[1] < 3 || end < 4 || end > 127)
++			continue;
++		for (i = 0; i < EDID_LENGTH; i++)
++			sum += blk[i];
++		if (sum)
++			continue;
++		for (i = 4; i < end; i += 1 + (blk[i] & 31))
++			if (i + 1 + (blk[i] & 31) > end)
++				break;
++		if (i != end)
++			continue;
++		for (i = 4; i < end; i += 1 + (blk[i] & 31)) {
++			u8 tag = blk[i] >> 5, len = blk[i] & 31;
++
++			if (((tag == 3 && len >= 3 && blk[i + 1] == 0xd8 &&
++			      blk[i + 2] == 0x5d && blk[i + 3] == 0xc4) ||
++			     (tag == 7 && len >= 1 && blk[i + 1] == 0x79)) &&
++			    len >= 10 && ((blk[i + 9] & 0xc0) || blk[i + 10]))
++				return true;
++		}
++	}
++	return false;
 +}
 +
 +/* Manufacturer ID and product code, for the log. */
@@ -18921,10 +20511,10 @@ index 000000000000..f7a470b62f5c
 +};
 diff --git a/drivers/ps5/frl-native.inc b/drivers/ps5/frl-native.inc
 new file mode 100644
-index 000000000000..5bb0dd8447bb
+index 000000000000..169cfec8c5c1
 --- /dev/null
 +++ b/drivers/ps5/frl-native.inc
-@@ -0,0 +1,399 @@
+@@ -0,0 +1,431 @@
 +/* SPDX-License-Identifier: GPL-2.0-only */
 +/* Native FRL setup for FLAVA3. */
 +#include "frl-native-msgs.h"
@@ -19056,8 +20646,7 @@ index 000000000000..5bb0dd8447bb
 +}
 +
 +/*
-+ * 0x7019 bit 6 is set while the IC sends FRL: 43 on a trained link, 00 or 01
-+ * after a fallback to TMDS.
++ * 0x7019 bit 6 shows the requested FRL state, not training success.
 + * Returns the ms waited, or -ETIMEDOUT.
 + */
 +static int frl_wait_link(unsigned int timeout_ms, u8 *value)
@@ -19098,6 +20687,7 @@ index 000000000000..5bb0dd8447bb
 +	WRITE_ONCE(hdcp_abort_until, jiffies);
 +	mutex_lock(&frl_state_lock);
 +	frl_cleanup_failed = first != 0;
++	frl_drop.last_valid = false;
 +	mutex_unlock(&frl_state_lock);
 +	return first;
 +}
@@ -19196,8 +20786,10 @@ index 000000000000..5bb0dd8447bb
 +	return i2c_exec();
 +}
 +
-+int ps5_hdmi_apply_plan(const struct ps5_hdmi_plan *plan)
++int ps5_hdmi_apply_plan_result(const struct ps5_hdmi_plan *plan, bool source_vrr,
++			       struct ps5_hdmi_setup_result *result)
 +{
++	struct ps5_hdmi_setup_result unused;
 +	const struct drm_display_mode *mode = &plan->mode;
 +	struct ps5_hdmi_frl_config config = plan->config;
 +	const struct hdmi_drm_infoframe *frame = plan->hdr ? &plan->metadata : NULL;
@@ -19207,13 +20799,22 @@ index 000000000000..5bb0dd8447bb
 +	struct hdmi_drm_infoframe sdr;
 +	unsigned int verify_ms = plan->verify_ms, generation = plan->generation;
 +	bool allm;
++	unsigned long started;
++	u32 start_count;
 +	int ret, cleanup;
 +
++	if (!result)
++		result = &unused;
++	*result = (struct ps5_hdmi_setup_result) { 0 };
 +	if (!plan->frl || !frl_plan_valid(plan) ||
 +	    plan->rate_mask != BIT(4) || plan->hdcp < 1 || plan->hdcp > 3 ||
 +	    (plan->start != 0x02 && plan->start != 0x42) || plan->verify_ms > 10000)
 +		return -EINVAL;
++	if (hdmi_ic_type == HDMI_IC_TYPE_VERDE)
++		return verde_apply_plan(plan, source_vrr, result);
 +	mutex_lock(&frl_setup_lock);
++	WRITE_ONCE(vrr_setup_pending, ps5_hdmi_vrr_enabled() &&
++		   (source_vrr || ps5_hdmi_vrr_allowed(mode)));
 +	if (!frl_output_safe()) {
 +		mutex_unlock(&frl_setup_lock);
 +		return -EIO;
@@ -19270,6 +20871,10 @@ index 000000000000..5bb0dd8447bb
 +	/* Keep cleanup armed even if start partially succeeds. */
 +	WRITE_ONCE(frl_output_active, true);
 +	FRL_STEP(frl_send_start(start));
++	started = jiffies;
++	mutex_lock(&frl_state_lock);
++	start_count = frl_drop_note_start(plan, frl_edid_crc, generation, started);
++	mutex_unlock(&frl_state_lock);
 +	WRITE_ONCE(hdcp_abort_until, jiffies + msecs_to_jiffies(HDCP_ABORT_MS));
 +	FRL_STEP(FRL_SEND(spd));
 +	msleep(1000);
@@ -19290,6 +20895,8 @@ index 000000000000..5bb0dd8447bb
 +		ret = -ENODEV;
 +		goto fail;
 +	}
++	/* Set up VRR follow while still muted. */
++	FRL_STEP(vrr_output_started(mode, source_vrr, generation, result));
 +	/* An unmute error must take the same recovery path as training errors. */
 +	FRL_STEP(sceHdmiDeviceSetVideoMute(0));
 +	if (READ_ONCE(frl_recovery))
@@ -19308,6 +20915,16 @@ index 000000000000..5bb0dd8447bb
 +		pr_debug("native FRL: ALLM on\n");
 +	pr_info("native FRL: VIC %u, format %u, %u-bit, DP %u kbps, minimum FRL rate %u\n",
 +		config.vic, config.format, config.bpc, config.dp_kbps, config.min_rate);
++	mutex_lock(&frl_state_lock);
++	if (frl_edid_valid && generation == frl_sink_generation) {
++		frl_drop.last = *plan;
++		frl_drop.started = started;
++		frl_drop.crc = frl_edid_crc;
++		frl_drop.generation = generation;
++		frl_drop.last_count = start_count;
++		frl_drop.last_valid = true;
++	}
++	mutex_unlock(&frl_state_lock);
 +	mutex_unlock(&frl_setup_lock);
 +	return 0;
 +
@@ -19315,15 +20932,198 @@ index 000000000000..5bb0dd8447bb
 +	pr_err("native FRL setup failed: %d; leaving video muted\n", ret);
 +	/* Always stop the encoder; a failed stop must not permit another FRL start. */
 +	cleanup = frl_cleanup();
-+	if (generation == frl_get_sink_generation())
-+		frl_record_failure(plan, cleanup != 0);
++	frl_finish_failure(plan, result, cleanup);
 +	mutex_unlock(&frl_setup_lock);
 +	return ret;
++}
++EXPORT_SYMBOL(ps5_hdmi_apply_plan_result);
++
++int ps5_hdmi_apply_plan(const struct ps5_hdmi_plan *plan)
++{
++	return ps5_hdmi_apply_plan_result(plan, false, NULL);
 +}
 +EXPORT_SYMBOL(ps5_hdmi_apply_plan);
 +
 +#undef FRL_STEP
 +#undef FRL_SEND
+diff --git a/drivers/ps5/frl-verde.inc b/drivers/ps5/frl-verde.inc
+new file mode 100644
+index 000000000000..d635eb4e213c
+--- /dev/null
++++ b/drivers/ps5/frl-verde.inc
+@@ -0,0 +1,172 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* FRL setup for VERDE, in the order the PS5 OS uses. */
++
++/* Turn the commands queued since i2c_init() into registered sequence @id. */
++static int verde_register_sequence(u8 id)
++{
++	u8 seq[255];
++	size_t len = i2c_ctx.msg_cur - i2c_ctx.msg_buf;
++
++	if (len > sizeof(seq)) {
++		mutex_unlock(&i2c_lock);
++		return -E2BIG;
++	}
++	seq[0] = id;
++	seq[1] = len;
++	seq[2] = i2c_ctx.msg_hdr->count;
++	seq[3] = 0;
++	memcpy(seq + 4, i2c_ctx.msg_buf + 4, len - 4);
++	i2c_ctx.msg_cur = i2c_ctx.msg_buf + sizeof(*i2c_ctx.msg_hdr);
++	i2c_ctx.msg_hdr->count = 0;
++	i2c_cmd_4_16(seq, len);
++	return i2c_exec();
++}
++
++/* Sequence 0x84: the HDMI side, run by the firmware after training. */
++static int verde_frl_output_sequence(bool vrr)
++{
++	i2c_init(0);
++	i2c_waitset(0x102, 0x01);
++	i2c_cmd_2_1(0x13, 0x10);
++	queueVerdeAudio();
++	i2c_cmd_2_1(0x9200, vrr);
++	i2c_cmd_2_1(0x109, 0x04);
++	i2c_waitclear(0x108, 0x10);
++	i2c_mask(0x108, 0x11, 0x17);
++	i2c_waitset(0x13, 0x40);
++	i2c_cmd_2_1(0x13, 0x40);
++	i2c_cmd_3_5(0x4001, 0x03);
++	i2c_cmd_2_1(0x11, 0x01);
++	return verde_register_sequence(0x84);
++}
++
++/* Sequence 0x8a: InfoFrames and packet enables, then unmute. */
++static int verde_frl_packet_sequence(const struct ps5_hdmi_plan *plan, bool vrr, bool allm)
++{
++	const struct ps5_hdmi_frl_config *config = &plan->config;
++	u8 avi[18], packets[10], depth[9], drm[HDMI_INFOFRAME_SIZE(DRM)];
++	bool rgb = config->format == PS5_HDMI_RGB;
++
++	if (plan->hdr && hdmi_drm_infoframe_pack_only(&plan->metadata, drm, sizeof(drm)) !=
++	    sizeof(drm))
++		return -EINVAL;
++	verde_avi(avi, config->vic, config->format, plan->bt2020, config->limited);
++	verde_packets(packets, allm, plan->hdr, rgb && config->bpc > 8);
++	verde_depth(depth, config->bpc, config->format, true);
++
++	i2c_init(0);
++	i2c_begin_block();
++	i2c_write_data(0x3058, avi, sizeof(avi));
++	i2c_write_data(0x31d0, (u8 *)verde_spd, sizeof(verde_spd));
++	if (plan->hdr)
++		i2c_write_data(0x3102, drm + 1, sizeof(drm) - 1);
++	i2c_end_block();
++	i2c_begin_block();
++	if (allm)
++		i2c_write_data(0x30e0, (u8 *)verde_hf_vsif, sizeof(verde_hf_vsif));
++	i2c_write_data(0x3033, depth, sizeof(depth));
++	i2c_write_data(0x307a, (u8[]){0x01, 0x0a, 0x70, 0x01, 0x00, 0x00, 0x00, 0x00}, 8);
++	if (vrr)
++		queueVerdeVrr(0, true);
++	i2c_write_data(0x3000, packets, sizeof(packets));
++	i2c_end_block();
++	i2c_cmd_2_1(0x300a, 0x01);
++	i2c_waitset(0x13, 0x80);
++	i2c_cmd_2_1(0x13, 0x80);
++	if (vrr) {
++		i2c_cmd_2_1(0x3261, 0x01);
++		i2c_cmd_2_1(0x3262, 0x02);
++		i2c_cmd_2_1(0x300a, 0x01);
++		i2c_waitset(0x13, 0x80);
++		i2c_cmd_2_1(0x13, 0x80);
++	}
++	i2c_mask(0x105, 0x01, 0x03);
++	return verde_register_sequence(0x8a);
++}
++
++static int verde_apply_plan(const struct ps5_hdmi_plan *plan, bool source_vrr,
++			    struct ps5_hdmi_setup_result *result)
++{
++	const struct drm_display_mode *mode = &plan->mode;
++	const struct ps5_hdmi_frl_config *config = &plan->config;
++	unsigned int generation = plan->generation;
++	u8 status = 0;
++	bool vrr, allm;
++	int ret;
++
++	mutex_lock(&frl_setup_lock);
++	if (generation != frl_get_sink_generation()) {
++		ret = -ENODEV;
++		goto out;
++	}
++	if (frl_sink_failed()) {
++		pr_info("verde FRL: not started, it failed earlier for this sink\n");
++		ret = -EIO;
++		goto out;
++	}
++	vrr = ps5_hdmi_vrr_allowed(mode);
++	if (source_vrr && !vrr) {
++		ret = -ENODEV;
++		if (vrr_fail_generation(generation)) {
++			result->generation = generation;
++			result->retry_fixed = true;
++			ret = -EAGAIN;
++		}
++		goto out;
++	}
++	allm = allm_wanted();
++	ret = frl_reg_read(0xf3, 1, &status);
++	if (ret)
++		goto fail;
++	initVerdeStatus(status);
++	sceHdmiSetAudioMute(1);
++	linkConfigVerde(mode);
++	ret = verde_frl_output_sequence(vrr);
++	if (ret)
++		goto fail;
++	ret = verde_frl_packet_sequence(plan, vrr, allm);
++	if (ret)
++		goto fail;
++	ret = configDpLinkTrainingVerde(vrr);
++	if (ret)
++		goto fail;
++	if (generation != frl_get_sink_generation()) {
++		ret = -ENODEV;
++		goto out;
++	}
++	i2c_init(0);
++	i2c_mask(0x104, 0x02, 0x02);
++	i2c_cmd_5_3(0x02);
++	ret = i2c_exec();
++	if (ret)
++		goto fail;
++
++	mutex_lock(&verde_if_lock);
++	verde_if.valid = READ_ONCE(verde_infoframes);
++	verde_if.vic = config->vic;
++	verde_if.format = config->format;
++	verde_if.limited = config->limited;
++	verde_if.bt2020 = plan->bt2020;
++	verde_if.hdr = plan->hdr;
++	if (plan->hdr)
++		verde_if.frame = plan->metadata;
++	verde_avi(verde_if.avi, verde_if.vic, verde_if.format, verde_if.bt2020, verde_if.limited);
++	verde_if.drm_sent = plan->hdr &&
++		hdmi_drm_infoframe_pack_only(&plan->metadata, verde_if.drm,
++					     sizeof(verde_if.drm)) == sizeof(verde_if.drm);
++	mutex_unlock(&verde_if_lock);
++	allm_record(generation, allm, true);
++	WRITE_ONCE(vrr_setup_pending, false);
++	pr_info("verde FRL: VIC %u, format %u, %u-bit%s%s%s\n", config->vic, config->format,
++		config->bpc, plan->hdr ? ", HDR" : "", vrr ? ", VRR" : "", allm ? ", ALLM" : "");
++	mutex_unlock(&frl_setup_lock);
++	return 0;
++
++fail:
++	pr_err("verde FRL setup failed: %d\n", ret);
++	initVerde();
++	frl_finish_failure(plan, result, 0);
++out:
++	mutex_unlock(&frl_setup_lock);
++	return ret;
++}
 diff --git a/drivers/ps5/frl-plan.inc b/drivers/ps5/frl-plan.inc
 new file mode 100644
 index 000000000000..060b4e15e194
@@ -19654,10 +21454,10 @@ index 000000000000..a2b12d65a71f
 +}
 diff --git a/drivers/gpu/drm/amd/display/amdgpu_dm/ps5-hdmi-fallback.inc b/drivers/gpu/drm/amd/display/amdgpu_dm/ps5-hdmi-fallback.inc
 new file mode 100644
-index 000000000000..2a99b43f772f
+index 000000000000..595f7f7aeab2
 --- /dev/null
 +++ b/drivers/gpu/drm/amd/display/amdgpu_dm/ps5-hdmi-fallback.inc
-@@ -0,0 +1,185 @@
+@@ -0,0 +1,184 @@
 +/* SPDX-License-Identifier: MIT */
 +
 +/* All modeset locks are held; the duplicate retains the request's DRM blobs. */
@@ -19770,8 +21570,7 @@ index 000000000000..2a99b43f772f
 +				break;
 +			/* After a failed cleanup the plan withholds FRL, so retries use TMDS. */
 +			mode = &crtc->state->mode;
-+			if (ps5_hdmi_recovery_enabled() &&
-+			    !dm_ps5_recovery_mode_rejected(recovery, mode))
++			if (dm_ps5_recovery_keep_mode(recovery, mode))
 +				best = mode;
 +			if (!best) {
 +				list_for_each_entry(mode, &connector->modes, head) {
@@ -19845,14 +21644,15 @@ index 000000000000..2a99b43f772f
 +}
 diff --git a/drivers/gpu/drm/amd/display/amdgpu_dm/ps5-hdmi-recovery.h b/drivers/gpu/drm/amd/display/amdgpu_dm/ps5-hdmi-recovery.h
 new file mode 100644
-index 000000000000..1df4096ac335
+index 000000000000..e775ab960d0a
 --- /dev/null
 +++ b/drivers/gpu/drm/amd/display/amdgpu_dm/ps5-hdmi-recovery.h
-@@ -0,0 +1,88 @@
+@@ -0,0 +1,106 @@
 +/* SPDX-License-Identifier: MIT */
 +#ifndef AMDGPU_DM_PS5_HDMI_RECOVERY_H
 +#define AMDGPU_DM_PS5_HDMI_RECOVERY_H
 +
++#include <linux/hdmi.h>
 +#include <linux/spinlock.h>
 +#include <linux/workqueue.h>
 +#include <drm/drm_connector.h>
@@ -19895,8 +21695,24 @@ index 000000000000..1df4096ac335
 +	unsigned int transient_retries;
 +	unsigned int tmds_retries;
 +	unsigned int rejected_count;
++	bool fixed_retry_used;
++	bool fixed_retry_pending;
 +	enum dm_ps5_recovery_state state;
 +};
++
++/* EOTF 0 is SDR, not an HDR request. */
++static inline bool dm_ps5_hdr_requested(const struct drm_connector_state *state)
++{
++	const struct drm_property_blob *blob = state->hdr_output_metadata;
++	const struct hdr_output_metadata *metadata;
++
++	if (!blob)
++		return false;
++	if (blob->length != sizeof(*metadata))
++		return true;
++	metadata = blob->data;
++	return metadata->hdmi_metadata_type1.eotf != HDMI_EOTF_TRADITIONAL_GAMMA_SDR;
++}
 +
 +#define PS5_HDMI_RESETUP_WINDOW_MS	10000
 +#define PS5_HDMI_RESETUP_DELAY_MS	500
@@ -19929,7 +21745,8 @@ index 000000000000..1df4096ac335
 +void dm_ps5_set_hdr_config(const struct drm_connector_state *state);
 +bool dm_ps5_recovery_start(struct dm_connector_state *conn);
 +void dm_ps5_recovery_complete(struct dm_connector_state *conn,
-+			      const struct dc_stream_state *stream, int error);
++			      const struct dc_stream_state *stream, int error,
++			      const struct ps5_hdmi_setup_result *result);
 +void dm_ps5_hdmi_resetup_work_func(struct work_struct *work);
 +void dm_ps5_frl_fallback_work_func(struct work_struct *work);
 +
@@ -19939,10 +21756,10 @@ index 000000000000..1df4096ac335
 +#endif
 diff --git a/drivers/gpu/drm/amd/display/amdgpu_dm/ps5-hdmi-recovery.inc b/drivers/gpu/drm/amd/display/amdgpu_dm/ps5-hdmi-recovery.inc
 new file mode 100644
-index 000000000000..a6e1efc7987f
+index 000000000000..6ab4f0448f1e
 --- /dev/null
 +++ b/drivers/gpu/drm/amd/display/amdgpu_dm/ps5-hdmi-recovery.inc
-@@ -0,0 +1,265 @@
+@@ -0,0 +1,289 @@
 +/* SPDX-License-Identifier: MIT */
 +
 +static void dm_ps5_recovery_release(struct kref *ref)
@@ -20013,6 +21830,20 @@ index 000000000000..a6e1efc7987f
 +	}
 +	spin_unlock_irqrestore(&recovery->lock, flags);
 +	return rejected;
++}
++
++/* VRR failures get one same-mode retry, even with recovery off. */
++static bool dm_ps5_recovery_keep_mode(struct dm_ps5_recovery *recovery,
++				     const struct drm_display_mode *mode)
++{
++	unsigned long flags;
++	bool fixed;
++
++	spin_lock_irqsave(&recovery->lock, flags);
++	fixed = recovery->fixed_retry_pending;
++	spin_unlock_irqrestore(&recovery->lock, flags);
++	return (fixed || ps5_hdmi_recovery_enabled()) &&
++	       !dm_ps5_recovery_mode_rejected(recovery, mode);
 +}
 +
 +static void dm_ps5_recovery_reject(struct dm_ps5_recovery *recovery,
@@ -20105,7 +21936,7 @@ index 000000000000..a6e1efc7987f
 +	recovery->status.requested_width = crtc_state->mode.hdisplay;
 +	recovery->status.requested_height = crtc_state->mode.vdisplay;
 +	recovery->status.requested_millihz = dm_ps5_mode_millihz(&crtc_state->mode);
-+	recovery->status.hdr = blob != NULL;
++	recovery->status.hdr = dm_ps5_hdr_requested(state);
 +	dm_ps5_recovery_put(conn->ps5_hdmi_recovery);
 +	conn->ps5_hdmi_recovery = recovery;
 +	conn->ps5_hdmi_attempt = 0;
@@ -20155,23 +21986,28 @@ index 000000000000..a6e1efc7987f
 +	spin_lock_irqsave(&recovery->lock, flags);
 +	start = conn->ps5_hdmi_attempt && conn->ps5_hdmi_attempt == recovery->attempts &&
 +		recovery->state == PS5_HDMI_RUNNING;
++	if (start)
++		recovery->fixed_retry_pending = false;
 +	spin_unlock_irqrestore(&recovery->lock, flags);
 +	dm_ps5_recovery_report(recovery);
 +	return start;
 +}
 +
 +void dm_ps5_recovery_complete(struct dm_connector_state *conn,
-+			      const struct dc_stream_state *stream, int error)
++			      const struct dc_stream_state *stream, int error,
++			      const struct ps5_hdmi_setup_result *result)
 +{
 +	struct dm_ps5_recovery *recovery = conn->ps5_hdmi_recovery;
 +	struct drm_display_mode mode, candidate;
 +	unsigned long flags;
-+	bool same_connection, frl;
++	bool same_connection, frl, vrr_error;
 +
 +	if (!recovery)
 +		return;
 +	same_connection = recovery->status.generation == ps5_hdmi_connection_generation();
 +	frl = conn->ps5_hdmi_plan_valid && conn->ps5_hdmi_plan.frl;
++	vrr_error = error && result && result->retry_fixed && same_connection &&
++		result->generation == recovery->status.generation;
 +	spin_lock_irqsave(&recovery->lock, flags);
 +	if (!conn->ps5_hdmi_attempt || conn->ps5_hdmi_attempt != recovery->attempts) {
 +		spin_unlock_irqrestore(&recovery->lock, flags);
@@ -20184,7 +22020,12 @@ index 000000000000..a6e1efc7987f
 +		/* A TMDS error retries the same mode; it never lowers the refresh rate. */
 +		if (!error)
 +			recovery->state = PS5_HDMI_READY;
-+		else if (frl || (ps5_hdmi_recovery_enabled() &&
++		else if (vrr_error) {
++			recovery->state = recovery->fixed_retry_used ?
++				PS5_HDMI_EXHAUSTED : PS5_HDMI_FAILED;
++			recovery->fixed_retry_pending = !recovery->fixed_retry_used;
++			recovery->fixed_retry_used = true;
++		} else if (frl || (ps5_hdmi_recovery_enabled() &&
 +				 ++recovery->tmds_retries <= PS5_HDMI_TRANSIENT_RETRIES))
 +			recovery->state = PS5_HDMI_FAILED;
 +		else
@@ -20204,7 +22045,7 @@ index 000000000000..a6e1efc7987f
 +		recovery->status.frl = frl;
 +	}
 +	spin_unlock_irqrestore(&recovery->lock, flags);
-+	if (error && same_connection && frl)
++	if (error && same_connection && frl && !vrr_error)
 +		dm_ps5_recovery_reject(recovery, &candidate, &conn->ps5_hdmi_plan);
 +	dm_ps5_recovery_report(recovery);
 +}
