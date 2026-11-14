@@ -10454,10 +10454,10 @@ index 000000000000..80953514df04
 +EXPORT_SYMBOL(ps5_gpufreq_register);
 diff --git a/drivers/ps5/hdmi.c b/drivers/ps5/hdmi.c
 new file mode 100755
-index 000000000000..bd604171c460
+index 000000000000..9ec75bd85a06
 --- /dev/null
 +++ b/drivers/ps5/hdmi.c
-@@ -0,0 +1,2487 @@
+@@ -0,0 +1,2493 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +
 +#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -10484,6 +10484,10 @@ index 000000000000..bd604171c460
 +static int extended_modes = 1;
 +module_param(extended_modes, int, 0444);
 +MODULE_PARM_DESC(extended_modes, "Extended modes (0 = disabled, 1 = enabled (default), 2 = enabled and preferred)");
++
++static bool extended_tmds;
++module_param(extended_tmds, bool, 0444);
++MODULE_PARM_DESC(extended_tmds, "Offer manual TMDS timings above 297 MHz outside 1440p, e.g. 1080p144-180 (untested, default off)");
 +
 +static bool frl_4k120 = true;
 +module_param(frl_4k120, bool, 0644);
@@ -11583,7 +11587,9 @@ index 000000000000..bd604171c460
 +	if (mode->hdisplay == 2560 && mode->vdisplay == 1440)
 +		return mode->clock > 340000;
 +
-+	return mode->clock <= 297000 && !drm_match_cea_mode(mode);
++	/* Above 297 MHz is untested outside 1440p: opt-in only. */
++	return (mode->clock <= 297000 || READ_ONCE(extended_tmds)) &&
++	       !drm_match_cea_mode(mode);
 +}
 +
 +static void setManualTimingFlava3(const struct drm_display_mode *mode)
