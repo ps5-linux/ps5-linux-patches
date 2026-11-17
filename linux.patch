@@ -5662,10 +5662,10 @@ index 000000000000..119cdcd49a63
 +#endif /* _MTS_H */
 diff --git a/drivers/net/phy/mts/mts_main.c b/drivers/net/phy/mts/mts_main.c
 new file mode 100644
-index 000000000000..d32938ab597d
+index 000000000000..8a21b654ad45
 --- /dev/null
 +++ b/drivers/net/phy/mts/mts_main.c
-@@ -0,0 +1,882 @@
+@@ -0,0 +1,890 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * PlayStation 5 Gigabit Ethernet driver
@@ -5679,6 +5679,7 @@ index 000000000000..d32938ab597d
 +#include <linux/pci.h>
 +#include <linux/netdevice.h>
 +#include <linux/etherdevice.h>
++#include <linux/if_vlan.h>
 +#include <linux/ethtool.h>
 +#include <linux/interrupt.h>
 +#include <linux/delay.h>
@@ -5940,11 +5941,15 @@ index 000000000000..d32938ab597d
 +	       (le32_to_cpu(p->rx_ring[i].flags) & GBE_DESC_DONE)) {
 +		u32 flags = le32_to_cpu(p->rx_ring[i].flags);
 +		u32 len = flags & GBE_DESC_RX_LEN_MASK;
++		u32 w2 = le32_to_cpu(p->rx_ring[i].word2);
++		/* chip strips the vlan tag into word2, frame is 4 short */
++		bool vlan = (w2 >> 16) == ETH_P_8021Q;
++		u32 min_len = vlan ? ETH_ZLEN - VLAN_HLEN : ETH_ZLEN;
 +
 +		netdev_dbg(dev, "rx[%u] len=%u flags=%#x w2=%#x\n", i, len,
 +			   flags, le32_to_cpu(p->rx_ring[i].word2));
 +
-+		if (len >= ETH_ZLEN && len <= GBE_DESC_RX_LEN) {
++		if (len >= min_len && len <= GBE_DESC_RX_LEN) {
 +			struct sk_buff *skb;
 +			const u8 *src = (const u8 *)p->rx_pool +
 +					i * GBE_DESC_RX_LEN;
@@ -5958,6 +5963,9 @@ index 000000000000..d32938ab597d
 +			skb = netdev_alloc_skb_ip_align(dev, len);
 +			if (skb) {
 +				skb_put_data(skb, src, len);
++				if (vlan)
++					__vlan_hwaccel_put_tag(skb, htons(ETH_P_8021Q),
++							       w2 & 0xffff);
 +				skb->protocol = eth_type_trans(skb, dev);
 +				netif_rx(skb);
 +				dev->stats.rx_packets++;
