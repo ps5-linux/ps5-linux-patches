@@ -4948,7 +4948,7 @@ index 22ad6a743038..b0cac99ac034 100644
  		return true;
  
 diff --git a/drivers/gpu/drm/amd/display/dc/link/link_dpms.c b/drivers/gpu/drm/amd/display/dc/link/link_dpms.c
-index 25ec3d38a14e..1ba725316cb6 100644
+index 25ec3d38a14e..5fe142942f07 100644
 --- a/drivers/gpu/drm/amd/display/dc/link/link_dpms.c
 +++ b/drivers/gpu/drm/amd/display/dc/link/link_dpms.c
 @@ -59,6 +59,10 @@
@@ -4956,7 +4956,7 @@ index 25ec3d38a14e..1ba725316cb6 100644
  #include "vpg.h"
  
 +#ifdef CONFIG_X86_PS5
-+bool ps5_hdmi_vrr_enabled(void);
++bool ps5_hdmi_clear_ignore_msa(void);
 +#endif
 +
  #define DC_LOGGER \
@@ -4968,7 +4968,7 @@ index 25ec3d38a14e..1ba725316cb6 100644
  				(stream->ignore_msa_timing_param) ? 1 : 0;
 +#ifdef CONFIG_X86_PS5
 +		/* The PS5 HDMI bridge loses its input with this bit set. */
-+		if (ps5_hdmi_vrr_enabled() && link->ep_type == DISPLAY_ENDPOINT_PHY &&
++		if (ps5_hdmi_clear_ignore_msa() && link->ep_type == DISPLAY_ENDPOINT_PHY &&
 +		    !link->ps5_usbc)
 +			new_downspread.bits.IGNORE_MSA_TIMING_PARAM = 0;
 +#endif
@@ -10787,14 +10787,15 @@ index 000000000000..aaa2b8a04f3f
 +EXPORT_SYMBOL(ps5_gpufreq_register);
 diff --git a/drivers/ps5/hdmi.c b/drivers/ps5/hdmi.c
 new file mode 100755
-index 000000000000..eafc17bb3463
+index 000000000000..fb85df351d38
 --- /dev/null
 +++ b/drivers/ps5/hdmi.c
-@@ -0,0 +1,3044 @@
+@@ -0,0 +1,3202 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +
 +#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 +
++#include <linux/completion.h>
 +#include <linux/crc32.h>
 +#include <linux/delay.h>
 +#include <linux/hdmi.h>
@@ -10876,6 +10877,18 @@ index 000000000000..eafc17bb3463
 +static bool verde_allm;
 +module_param(verde_allm, bool, 0444);
 +MODULE_PARM_DESC(verde_allm, "VERDE: ALLM, following the allm parameter (default off)");
++static int verde_hdcp = -1;
++module_param(verde_hdcp, int, 0644);
++MODULE_PARM_DESC(verde_hdcp, "VERDE: HDCP mode sent at the next HDMI init, values as hdcp_mode (default -1 = keep the existing setting)");
++static bool verde_hotplug_guard;
++module_param(verde_hotplug_guard, bool, 0644);
++MODULE_PARM_DESC(verde_hotplug_guard, "VERDE: no hotplug for an unchanged EDID right after a start, and at most 4 in 120 s until a replug (default off)");
++static bool verde_hide_hdr;
++module_param(verde_hide_hdr, bool, 0644);
++MODULE_PARM_DESC(verde_hide_hdr, "VERDE: remove the HDR block from the EDID while verde_infoframes is off, from the next EDID (default off)");
++static bool verde_vrr_msa;
++module_param(verde_vrr_msa, bool, 0444);
++MODULE_PARM_DESC(verde_vrr_msa, "VERDE: let the DP receiver ignore MSA timing while VRR is active (default off)");
 +
 +struct icc_i2c_msg {
 +	u8 code;
@@ -10942,6 +10955,10 @@ index 000000000000..eafc17bb3463
 +	u8 value;
 +} __packed;
 +
++struct i2c_cmd_5_1 {
++	u8 value;
++} __packed;
++
 +struct i2c_cmd_5_3 {
 +	u8 value;
 +} __packed;
@@ -10986,6 +11003,8 @@ index 000000000000..eafc17bb3463
 +static bool hdr_enabled;
 +static bool bt2020_enabled;
 +static unsigned long hdcp_abort_until;
++/* VERDE sends event 3 once the output runs after a start. */
++static DECLARE_COMPLETION(verde_link_up);
 +
 +/* Track FRL failures for the current physical connection. */
 +static DEFINE_MUTEX(frl_state_lock);
@@ -11502,6 +11521,42 @@ index 000000000000..eafc17bb3463
 +	i2c_ctx.msg_hdr->count++;
 +}
 +
++static void i2c_cmd_5_1(u8 value)
++{
++	struct i2c_cmd_hdr *hdr = (struct i2c_cmd_hdr *)i2c_ctx.msg_cur;
++	hdr->major = 5;
++	hdr->minor = 1;
++	hdr->count = 1;
++	hdr->length = sizeof(*hdr);
++	i2c_ctx.msg_cur += sizeof(*hdr);
++
++	struct i2c_cmd_5_1 *cmd = (struct i2c_cmd_5_1 *)i2c_ctx.msg_cur;
++	cmd->value = value;
++	i2c_ctx.msg_cur += sizeof(*cmd);
++	hdr->length += sizeof(*cmd);
++
++	i2c_ctx.msg_hdr->count++;
++}
++
++/* The last verde_hdcp value the bridge accepted, or -1. */
++static int verde_hdcp_sent = -1;
++
++/* 5/1 alone, as the PS5 OS sends it on VERDE; it applies at the next start. */
++static void verde_send_hdcp_mode(void)
++{
++	int mode = READ_ONCE(verde_hdcp);
++	int ret;
++
++	if (mode < 0 || mode > 3)
++		return;
++	i2c_init(0);
++	i2c_cmd_5_1(mode);
++	ret = i2c_exec();
++	if (!ret)
++		WRITE_ONCE(verde_hdcp_sent, mode);
++	pr_info("verde: HDCP mode %d sent: %d\n", mode, ret);
++}
++
 +static int stopHdcpHw(void)
 +{
 +	u8 buf[ICC_MSG_MAX_SIZE] = {};
@@ -11658,6 +11713,8 @@ index 000000000000..eafc17bb3463
 +			if (ret)
 +				pr_warn("HDCP mode %d failed at init: %d\n", mode, ret);
 +		}
++	} else if (hdmi_ic_type == HDMI_IC_TYPE_VERDE) {
++		verde_send_hdcp_mode();
 +	}
 +	sceControlHdmiEvent(1);
 +}
@@ -11770,6 +11827,15 @@ index 000000000000..eafc17bb3463
 +	return vrr && hdmi_ic_type == HDMI_IC_TYPE_FLAVA3;
 +}
 +EXPORT_SYMBOL(ps5_hdmi_vrr_enabled);
++
++/* FLAVA3 loses its input when told to ignore MSA timing; VERDE reports it can. */
++bool ps5_hdmi_clear_ignore_msa(void)
++{
++	if (hdmi_ic_type == HDMI_IC_TYPE_VERDE && READ_ONCE(verde_vrr_msa))
++		return false;
++	return ps5_hdmi_vrr_enabled();
++}
++EXPORT_SYMBOL(ps5_hdmi_clear_ignore_msa);
 +
 +/* One value, so readers never mix two EDIDs. */
 +void ps5_hdmi_vrr_set_caps(unsigned int min_hz, unsigned int max_hz)
@@ -12761,6 +12827,13 @@ index 000000000000..eafc17bb3463
 +		i2c_write_data(0x3271, (u8[]){0x01, 0x03, 0x00, refresh}, 4);
 +}
 +
++/* The bridge announces the same EDID again after a start. */
++static void verde_arm_hotplug_guard(void)
++{
++	if (READ_ONCE(verde_hotplug_guard))
++		WRITE_ONCE(hdcp_abort_until, jiffies + msecs_to_jiffies(HDCP_ABORT_MS));
++}
++
 +static bool verde_deep(unsigned int bpc, u8 format)
 +{
 +	return READ_ONCE(verde_deep_colour) && format != PS5_HDMI_422 && bpc > 8;
@@ -12827,6 +12900,7 @@ index 000000000000..eafc17bb3463
 +	i2c_delay(700);
 +	i2c_cmd_5_3(0x01);
 +	i2c_exec();
++	verde_arm_hotplug_guard();
 +}
 +
 +static int setHdmiVideoConfigVerde(const struct drm_display_mode *mode, unsigned int bpc,
@@ -13012,6 +13086,7 @@ index 000000000000..eafc17bb3463
 +		if (ret)
 +			pr_warn("video init failed: %d\n", ret);
 +	} else {
++		verde_send_hdcp_mode();
 +		stopHdcpHw();
 +		initVerde();
 +	}
@@ -13687,6 +13762,77 @@ index 000000000000..eafc17bb3463
 +		pr_debug("notification %*ph\n", min(len, 48U), msg->data);
 +}
 +
++/* Hotplugs for an unchanged EDID; only the notification handler uses these. */
++static unsigned int verde_same_edids;
++static unsigned long verde_same_since;
++
++/* At most 4 hotplugs for an unchanged EDID in 120 s, then none until a replug. */
++static bool verde_hotplug_limited(bool same)
++{
++	if (hdmi_ic_type != HDMI_IC_TYPE_VERDE || !READ_ONCE(verde_hotplug_guard) || !same) {
++		verde_same_edids = 0;
++		return false;
++	}
++	if (verde_same_edids > 4)
++		return true;
++	if (!verde_same_edids || time_after(jiffies, verde_same_since + 120 * HZ)) {
++		verde_same_since = jiffies;
++		verde_same_edids = 0;
++	}
++	if (++verde_same_edids <= 4)
++		return false;
++	pr_info("verde: same EDID 5 times in 120 s; no hotplug until a replug\n");
++	return true;
++}
++
++/*
++ * VERDE without verde_infoframes cannot signal HDR. Return a copy of @raw
++ * without the CTA HDR static metadata block, or NULL if it has none.
++ */
++static const struct drm_edid *verde_edid_without_hdr(const u8 *raw, size_t size)
++{
++	const struct drm_edid *edid = NULL;
++	bool found = false;
++	size_t ext;
++	u8 *buf;
++
++	buf = kmemdup(raw, size, GFP_KERNEL);
++	if (!buf)
++		return NULL;
++	for (ext = EDID_LENGTH; ext + EDID_LENGTH <= size; ext += EDID_LENGTH) {
++		u8 *b = buf + ext;
++		u8 dtd = b[2], i = 4, len, sum = 0;
++		bool strip = false;
++
++		if (b[0] != 0x02 || dtd < 4 || dtd > EDID_LENGTH - 1)
++			continue;
++		while (i < dtd) {
++			len = (b[i] & 0x1f) + 1;
++			if (i + len > dtd)
++				break;
++			if (b[i] >> 5 == 7 && len > 1 && b[i + 1] == 6) {
++				memmove(b + i, b + i + len, EDID_LENGTH - 1 - i - len);
++				memset(b + EDID_LENGTH - 1 - len, 0, len);
++				dtd -= len;
++				strip = true;
++				continue;
++			}
++			i += len;
++		}
++		if (!strip)
++			continue;
++		b[2] = dtd;
++		for (i = 0; i < EDID_LENGTH - 1; i++)
++			sum += b[i];
++		b[EDID_LENGTH - 1] = -sum;
++		found = true;
++	}
++	if (found)
++		edid = drm_edid_alloc(buf, size);
++	kfree(buf);
++	return edid;
++}
++
 +void hdmi_notification_handler(struct icc_msg *msg)
 +{
 +	if (msg->length < sizeof(*msg) + 4 || msg->length > ICC_MSG_MAX_SIZE) {
@@ -13712,8 +13858,14 @@ index 000000000000..eafc17bb3463
 +				since, strike == 1 ? "retrying once" : "second strike");
 +		last_edid_size = 0;
 +		WRITE_ONCE(hdcp_abort_until, jiffies);
++		verde_same_edids = 0;
++		if (hdmi_ic_type == HDMI_IC_TYPE_VERDE)
++			complete(&verde_link_up);
 +		hdmi_request_unplug();
 +	}
++
++	if (msg->data[1] == 0x03 && hdmi_ic_type == HDMI_IC_TYPE_VERDE)
++		complete(&verde_link_up);
 +
 +	/* Event 4: HDCP failed after the start and the IC muted the video. */
 +	if (msg->data[1] == 0x04 && hdmi_ic_type == HDMI_IC_TYPE_FLAVA3 &&
@@ -13749,7 +13901,11 @@ index 000000000000..eafc17bb3463
 +			byte0 = msg->data[4];
 +			frl_rate = (byte0 >> 1) & 7;
 +			fix_edid(&msg->data[4]);
-+			edid = drm_edid_alloc(&msg->data[4], size);
++			if (hdmi_ic_type == HDMI_IC_TYPE_VERDE && READ_ONCE(verde_hide_hdr) &&
++			    !READ_ONCE(verde_infoframes))
++				edid = verde_edid_without_hdr(&msg->data[4], size);
++			if (!edid)
++				edid = drm_edid_alloc(&msg->data[4], size);
 +			crc = crc32_le(~0, &msg->data[4], size);
 +			ycbcr422 = edid_cta_ycbcr422(&msg->data[4], size);
 +			ycbcr444 = edid_cta_ycbcr444(&msg->data[4], size);
@@ -13818,13 +13974,15 @@ index 000000000000..eafc17bb3463
 +		/* An HDCP abort mutes video without changing the sink. */
 +		if (same && time_before(jiffies, READ_ONCE(hdcp_abort_until))) {
 +			WRITE_ONCE(hdcp_abort_until, jiffies);
-+			if (!READ_ONCE(vrr_setup_pending)) {
++			if (hdmi_ic_type == HDMI_IC_TYPE_VERDE) {
++				pr_info("verde: same EDID after the start, no hotplug\n");
++			} else if (!READ_ONCE(vrr_setup_pending)) {
 +				pr_info("HDCP failed, unmuting video\n");
 +				sceHdmiDeviceSetVideoMute(0);
 +			} else {
 +				pr_info("HDCP abort: unmute deferred until VRR setup completes\n");
 +			}
-+		} else {
++		} else if (!verde_hotplug_limited(same)) {
 +			hdmi_request_hotplug();
 +		}
 +	}
@@ -19862,10 +20020,10 @@ index fbb62f7c3111..18edd8279773 100644
  extern void dmi_setup(void);
 diff --git a/include/linux/ps5.h b/include/linux/ps5.h
 new file mode 100755
-index 000000000000..2da8ba73791b
+index 000000000000..7273107633d2
 --- /dev/null
 +++ b/include/linux/ps5.h
-@@ -0,0 +1,284 @@
+@@ -0,0 +1,285 @@
 +/* SPDX-License-Identifier: GPL-2.0-only */
 +
 +#ifndef _LINUX_PS5_H
@@ -20033,6 +20191,7 @@ index 000000000000..2da8ba73791b
 +int ps5_hdmi_allm_update(void);
 +void ps5_hdmi_allm_queue_update(void);
 +bool ps5_hdmi_vrr_enabled(void);
++bool ps5_hdmi_clear_ignore_msa(void);
 +void ps5_hdmi_vrr_set_caps(unsigned int min_hz, unsigned int max_hz);
 +bool ps5_hdmi_vrr_allowed(const struct drm_display_mode *mode);
 +bool ps5_hdmi_vrr_failed(void);
@@ -21049,10 +21208,10 @@ index 000000000000..169cfec8c5c1
 +#undef FRL_SEND
 diff --git a/drivers/ps5/frl-verde.inc b/drivers/ps5/frl-verde.inc
 new file mode 100644
-index 000000000000..d635eb4e213c
+index 000000000000..ae27ed77da64
 --- /dev/null
 +++ b/drivers/ps5/frl-verde.inc
-@@ -0,0 +1,172 @@
+@@ -0,0 +1,207 @@
 +/* SPDX-License-Identifier: GPL-2.0-only */
 +/* FRL setup for VERDE, in the order the PS5 OS uses. */
 +
@@ -21139,6 +21298,34 @@ index 000000000000..d635eb4e213c
 +	return verde_register_sequence(0x8a);
 +}
 +
++/*
++ * Event 3 carries the sink's BKSV, so it may not come with HDCP off. A
++ * timeout is a failure only after verde_hdcp turned HDCP on.
++ */
++static int verde_wait_link(const struct ps5_hdmi_plan *plan)
++{
++	unsigned long start = jiffies;
++	int mode = READ_ONCE(verde_hdcp_sent);
++	bool up;
++
++	up = wait_for_completion_timeout(&verde_link_up,
++					 msecs_to_jiffies(plan->verify_ms + 1500));
++	if (plan->generation != frl_get_sink_generation())
++		return -ENODEV;
++	if (up) {
++		pr_info("verde FRL: link up (event 3) after %u ms\n",
++			jiffies_to_msecs(jiffies - start));
++		return 0;
++	}
++	if (mode == 0 || mode == 2) {
++		pr_warn("verde FRL: no event 3 %u ms after the start\n", plan->verify_ms + 1500);
++		return -EIO;
++	}
++	pr_info("verde FRL: no event 3 %u ms after the start; HDCP may be off\n",
++		plan->verify_ms + 1500);
++	return 0;
++}
++
 +static int verde_apply_plan(const struct ps5_hdmi_plan *plan, bool source_vrr,
 +			    struct ps5_hdmi_setup_result *result)
 +{
@@ -21189,10 +21376,17 @@ index 000000000000..d635eb4e213c
 +		ret = -ENODEV;
 +		goto out;
 +	}
++	reinit_completion(&verde_link_up);
 +	i2c_init(0);
 +	i2c_mask(0x104, 0x02, 0x02);
 +	i2c_cmd_5_3(0x02);
 +	ret = i2c_exec();
++	if (ret)
++		goto fail;
++	verde_arm_hotplug_guard();
++	ret = verde_wait_link(plan);
++	if (ret == -ENODEV)
++		goto out;
 +	if (ret)
 +		goto fail;
 +
